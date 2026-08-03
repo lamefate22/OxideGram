@@ -1,4 +1,4 @@
-//! Cryptographic utilities for session data encryption and decryption.
+//! Cryptographic adapter for persisted session payloads.
 //!
 //! Uses Argon2id for password key derivation and AES-256-GCM for authenticated encryption.
 
@@ -21,7 +21,7 @@ pub fn generate_salt() -> Result<[u8; SALT_LEN], OxideError> {
     let mut buffer = [0u8; SALT_LEN];
     SysRng
         .try_fill_bytes(&mut buffer)
-        .map_err(EncryptionError::SaltGenerationError)?;
+        .map_err(EncryptionError::SaltGeneration)?;
     Ok(buffer)
 }
 
@@ -30,7 +30,7 @@ pub fn derive_key(password: &[u8], salt: &[u8]) -> Result<[u8; KEY_LEN], OxideEr
     let mut out = [0u8; KEY_LEN];
     Argon2::default()
         .hash_password_into(password, salt, &mut out)
-        .map_err(EncryptionError::DeriveKeyError)?;
+        .map_err(EncryptionError::KeyDerivation)?;
     Ok(out)
 }
 
@@ -39,19 +39,19 @@ pub fn derive_key(password: &[u8], salt: &[u8]) -> Result<[u8; KEY_LEN], OxideEr
 /// Prepends a randomly generated 12-byte nonce to the resulting ciphertext output.
 pub fn encrypt(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Result<Vec<u8>, OxideError> {
     if plaintext.is_empty() {
-        return Err(EncryptionError::InvalidDataError.into());
+        return Err(EncryptionError::InvalidData.into());
     }
 
     let mut nonce_bytes = [0u8; NONCE_LEN];
     SysRng
         .try_fill_bytes(&mut nonce_bytes)
-        .map_err(EncryptionError::SaltGenerationError)?;
+        .map_err(EncryptionError::SaltGeneration)?;
     let nonce = Nonce::from(nonce_bytes);
 
     let cipher = Aes256Gcm::new(key.into());
     let ciphertext = cipher
         .encrypt(&nonce, plaintext)
-        .map_err(EncryptionError::EncryptError)?;
+        .map_err(EncryptionError::Encryption)?;
 
     let mut result = Vec::with_capacity(NONCE_LEN + ciphertext.len());
     result.extend_from_slice(&nonce_bytes);
@@ -62,19 +62,19 @@ pub fn encrypt(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Result<Vec<u8>, OxideEr
 /// Decrypts ciphertext bytes (including prepended 12-byte nonce) using AES-256-GCM.
 pub fn decrypt(key: &[u8; KEY_LEN], data: &[u8]) -> Result<Vec<u8>, OxideError> {
     if data.len() < NONCE_LEN {
-        return Err(EncryptionError::InvalidDataError.into());
+        return Err(EncryptionError::InvalidData.into());
     }
 
     let (nonce_bytes, ciphertext) = data.split_at(NONCE_LEN);
     let nonce_arr: [u8; 12] = nonce_bytes
         .try_into()
-        .map_err(|_| EncryptionError::InvalidDataError)?;
+        .map_err(|_| EncryptionError::InvalidData)?;
     let nonce = Nonce::from(nonce_arr);
     let cipher = Aes256Gcm::new(key.into());
 
     let plaintext = cipher
         .decrypt(&nonce, ciphertext)
-        .map_err(EncryptionError::DecryptError)?;
+        .map_err(EncryptionError::Decryption)?;
     Ok(plaintext)
 }
 
@@ -98,9 +98,9 @@ pub fn decrypt_string(
     let key = derive_key(password.as_bytes(), salt)?;
     let ciphertext_bytes = URL_SAFE_NO_PAD
         .decode(ciphertext_b64)
-        .map_err(EncryptionError::Base64Error)?;
+        .map_err(EncryptionError::Base64)?;
     let decrypted_bytes = decrypt(&key, &ciphertext_bytes)?;
-    let text = String::from_utf8(decrypted_bytes).map_err(|_| EncryptionError::InvalidDataError)?;
+    let text = String::from_utf8(decrypted_bytes).map_err(|_| EncryptionError::InvalidData)?;
     Ok(text)
 }
 

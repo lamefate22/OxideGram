@@ -1,40 +1,60 @@
-//! TOML configuration management for OxideGram.
+//! TOML implementation of the saved-session repository.
 //!
 //! Stores authorized account metadata, encrypted session payload strings, and application settings
 //! in `data/config.oxide` using atomic file replacement.
 
+use crate::application::authentication::SessionRepository;
+use crate::domain::identity::SavedSession;
 use crate::errors::{ConfigError, OxideError};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{debug, info};
 
-/// Data model representing an encrypted Telegram user session.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionModel {
-    /// URL-safe Base64 encoded salt used for Argon2id key derivation.
-    pub salt: String,
-    /// Telegram application API ID.
-    pub api_id: i32,
-    /// Telegram application API hash.
-    pub api_hash: String,
-    /// URL-safe Base64 encoded AES-256-GCM ciphertext containing the session data.
-    pub session_string: String,
-}
-
 /// Root data model representing OxideGram configuration file contents.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct SettingsModel {
+struct SettingsModel {
     /// Map of phone numbers to encrypted session data.
     #[serde(default)]
-    pub sessions: HashMap<String, SessionModel>,
+    sessions: HashMap<String, PersistedSession>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedSession {
+    salt: String,
+    api_id: i32,
+    api_hash: String,
+    session_string: String,
+}
+
+impl From<SavedSession> for PersistedSession {
+    fn from(session: SavedSession) -> Self {
+        Self {
+            salt: session.salt,
+            api_id: session.api_id,
+            api_hash: session.api_hash,
+            session_string: session.session_string,
+        }
+    }
+}
+
+impl From<&PersistedSession> for SavedSession {
+    fn from(session: &PersistedSession) -> Self {
+        Self {
+            salt: session.salt.clone(),
+            api_id: session.api_id,
+            api_hash: session.api_hash.clone(),
+            session_string: session.session_string.clone(),
+        }
+    }
 }
 
 /// Controller for loading, saving, and querying application settings stored in `.oxide` format.
 pub struct OxideConfig {
-    pub path: PathBuf,
-    pub data: SettingsModel,
+    path: PathBuf,
+    data: SettingsModel,
 }
 
 impl Default for OxideConfig {
@@ -56,9 +76,7 @@ impl OxideConfig {
     async fn ensure_config_exists(&self) -> Result<(), OxideError> {
         if !self.path.exists() {
             if let Some(parent) = self.path.parent() {
-                fs::create_dir_all(parent)
-                    .await
-                    .map_err(ConfigError::IoError)?;
+                fs::create_dir_all(parent).await.map_err(ConfigError::Io)?;
             }
             self.save().await?;
         }
@@ -70,8 +88,9 @@ impl OxideConfig {
         self.ensure_config_exists().await?;
         let content = fs::read_to_string(&self.path)
             .await
-            .map_err(ConfigError::IoError)?;
-        let settings: SettingsModel = toml::from_str(&content).map_err(ConfigError::TomlDeError)?;
+            .map_err(ConfigError::Io)?;
+        let settings: SettingsModel =
+            toml::from_str(&content).map_err(ConfigError::Deserialization)?;
         self.data = settings;
         debug!(path = %self.path.display(), sessions = self.data.sessions.len(), "Configuration loaded");
         Ok(())
@@ -79,15 +98,15 @@ impl OxideConfig {
 
     /// Atomically saves current settings to disk using a temporary `.tmp` file.
     pub async fn save(&self) -> Result<(), OxideError> {
-        let toml_string = toml::to_string_pretty(&self.data).map_err(ConfigError::TomlSerError)?;
+        let toml_string = toml::to_string_pretty(&self.data).map_err(ConfigError::Serialization)?;
         let tmp_path = self.path.with_extension("tmp");
 
         fs::write(&tmp_path, toml_string)
             .await
-            .map_err(ConfigError::IoError)?;
+            .map_err(ConfigError::Io)?;
         fs::rename(&tmp_path, &self.path)
             .await
-            .map_err(ConfigError::IoError)?;
+            .map_err(ConfigError::Io)?;
         debug!(path = %self.path.display(), "Configuration saved");
         Ok(())
     }
@@ -96,15 +115,38 @@ impl OxideConfig {
     pub async fn add_session(
         &mut self,
         phone: String,
-        session_data: SessionModel,
+        session_data: SavedSession,
     ) -> Result<(), OxideError> {
         info!(phone, "Session added to configuration");
-        self.data.sessions.insert(phone, session_data);
+        self.data.sessions.insert(phone, session_data.into());
         self.save().await
     }
 
-    /// Returns a reference to the session associated with the phone number, if present.
-    pub fn get_session(&self, phone: &str) -> Option<&SessionModel> {
-        self.data.sessions.get(phone)
+    /// Returns the session associated with the phone number, if present.
+    pub fn get_session(&self, phone: &str) -> Option<SavedSession> {
+        self.data.sessions.get(phone).map(SavedSession::from)
+    }
+}
+
+#[async_trait]
+impl SessionRepository for OxideConfig {
+    async fn load(&mut self) -> Result<(), OxideError> {
+        OxideConfig::load(self).await
+    }
+
+    fn session_phones(&self) -> Vec<String> {
+        self.data.sessions.keys().cloned().collect()
+    }
+
+    fn session(&self, phone: &str) -> Option<SavedSession> {
+        self.get_session(phone)
+    }
+
+    async fn save_session(
+        &mut self,
+        phone: String,
+        session: SavedSession,
+    ) -> Result<(), OxideError> {
+        self.add_session(phone, session).await
     }
 }

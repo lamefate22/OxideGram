@@ -1,4 +1,8 @@
-//! Infrastructure layer containing Telegram authentication and bot file discovery.
+//! Adapters for external systems and persistence.
 
-pub mod auth;
-pub mod loader;
+pub mod crypto;
+pub mod logging;
+pub mod lua_runtime;
+pub mod script_catalog;
+pub mod session_repository;
+pub mod telegram_auth;

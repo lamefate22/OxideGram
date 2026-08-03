@@ -1,4 +1,4 @@
-//! Logging configuration for OxideGram.
+//! Logging infrastructure for OxideGram.
 //!
 //! Configures rolling file output to `data/logs/` using `tracing-subscriber` and `tracing-appender`.
 //! Console output to `stdout` is explicitly disabled as requested.

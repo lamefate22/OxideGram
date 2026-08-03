@@ -1,31 +1,23 @@
 //! Bot script loader scanning `data/bots/` directory for executable `.lua` scripts.
 
+use crate::domain::automation::BotScript;
 use crate::errors::{OxideError, ScriptError};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
-/// Metadata describing a discovered bot script.
-#[derive(Debug, Clone)]
-pub struct BotInfo {
-    /// Name of the bot derived from file stem.
-    pub name: String,
-    /// Absolute or relative path to the `.lua` bot script.
-    pub path: PathBuf,
-}
-
 /// Scanner for dynamic bot script discovery.
-pub struct BotLoader {
+pub struct FileSystemScriptCatalog {
     pub bots_dir: PathBuf,
 }
 
-impl Default for BotLoader {
+impl Default for FileSystemScriptCatalog {
     fn default() -> Self {
         Self::new("data/bots")
     }
 }
 
-impl BotLoader {
-    /// Creates a new `BotLoader` pointing to the specified directory.
+impl FileSystemScriptCatalog {
+    /// Creates a catalog pointing to the specified directory.
     pub fn new<P: AsRef<Path>>(path: P) -> Self {
         Self {
             bots_dir: path.as_ref().to_path_buf(),
@@ -46,7 +38,7 @@ impl BotLoader {
     }
 
     /// Searches the `data/bots` directory for available `.lua` bot scripts.
-    pub async fn search_bots(&self) -> Result<Vec<BotInfo>, OxideError> {
+    pub async fn search_bots(&self) -> Result<Vec<BotScript>, OxideError> {
         self.ensure_bots_dir_exists().await?;
         let mut discovered = Vec::new();
 
@@ -74,7 +66,7 @@ impl BotLoader {
                     .and_then(|s| s.to_str())
                     .unwrap_or("unknown_bot");
 
-                discovered.push(BotInfo {
+                discovered.push(BotScript {
                     name: stem.to_string(),
                     path,
                 });

@@ -16,7 +16,7 @@ pub enum AuthError {
     #[error("Grammers invocation error: {0}")]
     InvocationError(#[from] grammers_client::InvocationError),
     #[error("Grammers sign-in error: {0}")]
-    SignInError(#[from] grammers_client::SignInError),
+    SignIn(#[source] Box<grammers_client::SignInError>),
     #[error("Session for {0} already exists in config.")]
     SessionAlreadyExists(String),
     #[error("Session for {0} not found in config.")]
@@ -25,34 +25,36 @@ pub enum AuthError {
     DecryptionFailed(String),
     #[error("Interactive UI error: {0}")]
     UiError(String),
+    #[error("Telegram session storage error: {0}")]
+    SessionStorage(String),
 }
 
 /// Error types related to cryptographic operations (Argon2id and AES-256-GCM).
 #[derive(Debug, Error)]
 pub enum EncryptionError {
     #[error("Invalid data passed to encryption/decryption.")]
-    InvalidDataError,
+    InvalidData,
     #[error("Failed to derive key.")]
-    DeriveKeyError(#[source] argon2::Error),
+    KeyDerivation(#[source] argon2::Error),
     #[error("Failed to encrypt plaintext.")]
-    EncryptError(#[source] aes_gcm::Error),
+    Encryption(#[source] aes_gcm::Error),
     #[error("Failed to decrypt ciphertext.")]
-    DecryptError(#[source] aes_gcm::Error),
+    Decryption(#[source] aes_gcm::Error),
     #[error("Failed to generate salt.")]
-    SaltGenerationError(#[source] rand::rngs::SysError),
+    SaltGeneration(#[source] rand::rngs::SysError),
     #[error("Base64 decode error: {0}")]
-    Base64Error(#[from] base64::DecodeError),
+    Base64(#[from] base64::DecodeError),
 }
 
 /// Error types related to TOML configuration loading and saving.
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("Failed to read or write config file: {0}")]
-    IoError(#[from] std::io::Error),
+    Io(#[from] std::io::Error),
     #[error("Failed to parse TOML configuration: {0}")]
-    TomlDeError(#[from] toml::de::Error),
+    Deserialization(#[from] toml::de::Error),
     #[error("Failed to serialize TOML configuration: {0}")]
-    TomlSerError(#[from] toml::ser::Error),
+    Serialization(#[from] toml::ser::Error),
 }
 
 /// Error types related to Lua bot execution and dynamic loading.

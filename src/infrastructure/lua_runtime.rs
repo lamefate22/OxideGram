@@ -4,6 +4,7 @@
 //! supports Telethon-like filters for peers, direction, chat type, text, commands, and patterns,
 //! listens for MTProto updates, and dispatches matching messages to registered Lua callbacks.
 
+use crate::domain::automation::{ChatType, MessageContext, MessageFilter};
 use crate::errors::{OxideError, ScriptError};
 use grammers_client::Client;
 use grammers_client::client::UpdatesConfiguration;
@@ -11,137 +12,38 @@ use grammers_client::update::Update;
 use grammers_session::types::{PeerAuth, PeerId, PeerKind, PeerRef};
 use grammers_session::updates::UpdatesLike;
 use mlua::{Function, Lua, RegistryKey, Table, Value};
-use regex::Regex;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::{Mutex, watch};
 use tracing::{error, info, warn};
 
-/// Message filter options for fine-grained event handling (Telethon-like).
-#[derive(Debug, Clone, Default)]
-pub struct MessageFilter {
-    pub chats: Option<Vec<i64>>,
-    pub senders: Option<Vec<i64>>,
-    pub incoming: Option<bool>,
-    pub outgoing: Option<bool>,
-    pub private: Option<bool>,
-    pub group: Option<bool>,
-    pub channel: Option<bool>,
-    pub has_text: Option<bool>,
-    pub commands: Option<Vec<String>>,
-    pub pattern: Option<Regex>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChatType {
-    Private,
-    Group,
-    Channel,
-}
-
-#[derive(Debug)]
-pub struct MessageContext<'a> {
-    pub text: &'a str,
-    pub chat_id: i64,
-    pub sender_id: i64,
-    pub incoming: bool,
-    pub chat_type: ChatType,
-}
-
-impl MessageFilter {
-    /// Parses filter options from a Lua table.
-    pub fn from_lua_table(table: &Table) -> Result<Self, mlua::Error> {
-        let mut filter = Self::default();
-
-        filter.chats = parse_integer_list(table, "chats")?;
-        filter.senders = parse_integer_list(table, "senders")?;
-        filter.incoming = parse_boolean(table, "incoming")?;
-        filter.outgoing = parse_boolean(table, "outgoing")?;
-        filter.private = parse_boolean(table, "private")?;
-        filter.group = parse_boolean(table, "group")?;
-        filter.channel = parse_boolean(table, "channel")?;
-        filter.has_text = parse_boolean(table, "has_text")?;
-        filter.commands = parse_string_list(table, "commands")?.map(|commands| {
+/// Converts Lua filter values into the domain filter model.
+fn parse_message_filter(table: &Table) -> Result<MessageFilter, mlua::Error> {
+    let mut filter = MessageFilter {
+        chats: parse_integer_list(table, "chats")?,
+        senders: parse_integer_list(table, "senders")?,
+        incoming: parse_boolean(table, "incoming")?,
+        outgoing: parse_boolean(table, "outgoing")?,
+        private: parse_boolean(table, "private")?,
+        group: parse_boolean(table, "group")?,
+        channel: parse_boolean(table, "channel")?,
+        has_text: parse_boolean(table, "has_text")?,
+        commands: parse_string_list(table, "commands")?.map(|commands| {
             commands
                 .into_iter()
                 .map(|command| command.trim_start_matches('/').to_lowercase())
                 .collect()
-        });
+        }),
+        ..MessageFilter::default()
+    };
 
-        if let Some(pattern) = parse_string(table, "pattern")? {
-            filter.pattern = Some(Regex::new(&pattern).map_err(|error| {
-                mlua::Error::RuntimeError(format!("invalid 'pattern' regex '{pattern}': {error}"))
-            })?);
-        }
-
-        Ok(filter)
+    if let Some(pattern) = parse_string(table, "pattern")? {
+        filter.pattern = Some(regex::Regex::new(&pattern).map_err(|error| {
+            mlua::Error::RuntimeError(format!("invalid 'pattern' regex '{pattern}': {error}"))
+        })?);
     }
-
-    /// Evaluates if an incoming message matches the filter rules.
-    pub fn matches(&self, context: &MessageContext<'_>) -> bool {
-        if let Some(ref chats) = self.chats {
-            if !chats.contains(&context.chat_id) {
-                return false;
-            }
-        }
-
-        if let Some(ref senders) = self.senders {
-            if !senders.contains(&context.sender_id) {
-                return false;
-            }
-        }
-
-        if let Some(inc) = self.incoming {
-            if inc != context.incoming {
-                return false;
-            }
-        }
-
-        if let Some(out) = self.outgoing {
-            if out != !context.incoming {
-                return false;
-            }
-        }
-
-        if self
-            .private
-            .is_some_and(|expected| expected != (context.chat_type == ChatType::Private))
-            || self
-                .group
-                .is_some_and(|expected| expected != (context.chat_type == ChatType::Group))
-            || self
-                .channel
-                .is_some_and(|expected| expected != (context.chat_type == ChatType::Channel))
-            || self
-                .has_text
-                .is_some_and(|expected| expected != !context.text.is_empty())
-        {
-            return false;
-        }
-
-        if let Some(commands) = &self.commands {
-            let command = context
-                .text
-                .strip_prefix('/')
-                .and_then(|text| text.split_whitespace().next())
-                .and_then(|text| text.split('@').next())
-                .map(str::to_lowercase);
-            if !command.is_some_and(|command| commands.contains(&command)) {
-                return false;
-            }
-        }
-
-        if self
-            .pattern
-            .as_ref()
-            .is_some_and(|regex| !regex.is_match(context.text))
-        {
-            return false;
-        }
-
-        true
-    }
+    Ok(filter)
 }
 
 fn parse_boolean(table: &Table, key: &str) -> Result<Option<bool>, mlua::Error> {
@@ -262,10 +164,10 @@ impl LuaBotRunner {
                 move |_, (chat_id, text, delay): (i64, String, Option<f64>)| {
                     let client = client_clone.clone();
                     async move {
-                        if let Some(d) = delay {
-                            if d > 0.0 {
-                                tokio::time::sleep(std::time::Duration::from_secs_f64(d)).await;
-                            }
+                        if let Some(d) = delay
+                            && d > 0.0
+                        {
+                            tokio::time::sleep(std::time::Duration::from_secs_f64(d)).await;
                         }
 
                         let peer_id = PeerId::user_unchecked(chat_id);
@@ -299,7 +201,7 @@ impl LuaBotRunner {
             .create_function(move |lua_ctx, (arg1, arg2): (Value, Option<Function>)| {
                 let (filter, func) = match (arg1, arg2) {
                     (Value::Table(t), Some(f)) => {
-                        let parsed_filter = MessageFilter::from_lua_table(&t)?;
+                        let parsed_filter = parse_message_filter(&t)?;
                         (Some(parsed_filter), f)
                     }
                     (Value::Function(f), _) => (None, f),
@@ -449,10 +351,10 @@ impl LuaBotRunner {
                     move |_, (reply_text, delay): (String, Option<f64>)| {
                         let client = client_clone.clone();
                         async move {
-                            if let Some(d) = delay {
-                                if d > 0.0 {
-                                    tokio::time::sleep(std::time::Duration::from_secs_f64(d)).await;
-                                }
+                            if let Some(d) = delay
+                                && d > 0.0
+                            {
+                                tokio::time::sleep(std::time::Duration::from_secs_f64(d)).await;
                             }
 
                             let peer_id = PeerId::user_unchecked(chat_id);
@@ -497,10 +399,10 @@ impl LuaBotRunner {
                         }
                     }
 
-                    if let Ok(func) = self.lua.registry_value::<Function>(&item.callback_key) {
-                        if let Err(err) = func.call::<()>(event_table.clone()) {
-                            error!(chat_id, sender_id, error = %err, "Lua message handler failed");
-                        }
+                    if let Ok(func) = self.lua.registry_value::<Function>(&item.callback_key)
+                        && let Err(err) = func.call::<()>(event_table.clone())
+                    {
+                        error!(chat_id, sender_id, error = %err, "Lua message handler failed");
                     }
                 }
             }
@@ -511,7 +413,8 @@ impl LuaBotRunner {
 
 #[cfg(test)]
 mod tests {
-    use super::{ChatType, MessageContext, MessageFilter};
+    use super::parse_message_filter;
+    use crate::domain::automation::{ChatType, MessageContext};
     use mlua::Lua;
 
     #[test]
@@ -531,7 +434,7 @@ mod tests {
             )
             .eval()
             .unwrap();
-        let filter = MessageFilter::from_lua_table(&table).unwrap();
+        let filter = parse_message_filter(&table).unwrap();
 
         assert!(filter.matches(&MessageContext {
             text: "/start payload",
@@ -560,7 +463,7 @@ mod tests {
     fn command_filter_supports_bot_suffix_and_case_insensitive_names() {
         let lua = Lua::new();
         let table = lua.load(r#"return { commands = "START" }"#).eval().unwrap();
-        let filter = MessageFilter::from_lua_table(&table).unwrap();
+        let filter = parse_message_filter(&table).unwrap();
 
         assert!(filter.matches(&MessageContext {
             text: "/start@my_bot argument",
@@ -577,7 +480,7 @@ mod tests {
         let invalid_type = lua.load(r#"return { chats = "100" }"#).eval().unwrap();
         let invalid_pattern = lua.load(r#"return { pattern = "[" }"#).eval().unwrap();
 
-        assert!(MessageFilter::from_lua_table(&invalid_type).is_err());
-        assert!(MessageFilter::from_lua_table(&invalid_pattern).is_err());
+        assert!(parse_message_filter(&invalid_type).is_err());
+        assert!(parse_message_filter(&invalid_pattern).is_err());
     }
 }

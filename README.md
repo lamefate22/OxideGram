@@ -13,6 +13,7 @@ The project is a CLI-focused rewrite of [NoxGram](https://github.com/lamefate22/
 - Embedded Lua 5.4 runtime, with no separate Lua installation required
 - Telethon-like message filters for chats, senders, direction, chat type, commands, text, and regular expressions
 - Automatic discovery of `.lua` scripts in `data/bots/`
+- Minimal dark-terminal interface with consistent interactive prompt styling
 - Structured daily log files with seven-file retention
 - Cross-platform Rust codebase for Windows, Linux, and macOS
 
@@ -109,12 +110,28 @@ cargo run
 
 ## Development
 
+OxideGram follows a DDD-inspired hexagonal structure. Dependency flow points inward, keeping Telegram, Lua, persistence, and terminal details outside the business rules:
+
+```text
+src/
+|-- domain/          # Pure session and message-filtering rules
+|-- application/     # Authentication use cases and dependency ports
+|-- infrastructure/  # Telegram, Lua, crypto, files, and logging adapters
+|-- presentation/    # Interactive terminal adapter
+`-- main.rs          # Composition root and process lifecycle
+
+presentation + infrastructure -> application -> domain
+```
+
+The CLI uses an `inquire` render theme designed for dark terminals. It does not override the terminal background. Set the standard `NO_COLOR` environment variable to disable prompt colors.
+
 Run the standard checks before submitting changes:
 
 ```bash
 cargo fmt -- --check
 cargo check
 cargo test
+cargo clippy --all-targets -- -D warnings
 ```
 
 The GitHub Pages documentation is stored in `docs/` and deployed by `.github/workflows/pages.yml`. In the GitHub repository settings, select **GitHub Actions** as the Pages source to enable deployment.

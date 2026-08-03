@@ -2,11 +2,11 @@
 //!
 //! Entry point for the interactive terminal interface.
 
-mod core;
+mod application;
+mod domain;
 mod errors;
 mod infrastructure;
-mod scripting;
-mod ui;
+mod presentation;
 
 use errors::OxideError;
 use std::error::Error;
@@ -15,7 +15,7 @@ use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    use core::log::initialize_logger;
+    use infrastructure::logging::initialize_logger;
 
     let _guard = match initialize_logger() {
         Ok(guard) => guard,
@@ -47,23 +47,26 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> Result<(), OxideError> {
-    use core::config::OxideConfig;
-    use infrastructure::auth::OxideAuth;
-    use infrastructure::loader::BotLoader;
-    use scripting::engine::LuaBotRunner;
-    use ui::console::OxideConsole;
+    use application::authentication::LoginService;
+    use infrastructure::lua_runtime::LuaBotRunner;
+    use infrastructure::script_catalog::FileSystemScriptCatalog;
+    use infrastructure::session_repository::OxideConfig;
+    use infrastructure::telegram_auth::GrammersAuthGateway;
+    use presentation::console::OxideConsole;
 
     let console = OxideConsole::new();
+    console.print_header();
     let mut config = OxideConfig::default();
 
-    let mut auth = OxideAuth::new(&mut config, &console);
-    let authenticated = auth.login().await?;
+    let telegram = GrammersAuthGateway;
+    let mut login = LoginService::new(&mut config, &console, &telegram);
+    let authenticated = login.login().await?;
 
-    let loader = BotLoader::default();
+    let loader = FileSystemScriptCatalog::default();
     let bots = loader.search_bots().await?;
 
     if bots.is_empty() {
-        console.print("No bot scripts found in 'data/bots/'. Place a .lua file there and retry.");
+        console.print("[empty] No scripts found in data/bots/. Add a .lua file and retry.");
         return Ok(());
     }
 
@@ -71,7 +74,7 @@ async fn run() -> Result<(), OxideError> {
     let selected_name = match console.ask_select("Select a bot to run:", bot_names) {
         Ok(name) => name,
         Err(_) => {
-            console.print("Goodbye!");
+            console.print("Session canceled.");
             return Ok(());
         }
     };
@@ -80,7 +83,10 @@ async fn run() -> Result<(), OxideError> {
         let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
         let mut runner = LuaBotRunner::new(authenticated.client, authenticated.updates)?;
         runner.load_script(&selected_bot.path).await?;
-        console.print(&format!("Bot '{}' is running...", selected_bot.name));
+        console.print(&format!(
+            "[running] {}  |  press Ctrl+C to stop",
+            selected_bot.name
+        ));
         runner.run_event_loop(cancel_rx).await?;
     }
 

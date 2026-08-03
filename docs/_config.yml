@@ -1,0 +1,8 @@
+title: OxideGram Scripting
+description: Lua scripting engine reference and examples for OxideGram
+theme: jekyll-theme-minimal
+markdown: kramdown
+kramdown:
+  input: GFM
+exclude:
+  - README.md

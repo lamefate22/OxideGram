@@ -1,0 +1,29 @@
+[package]
+name = "OxideGram"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mlua = { version = "0.12.0", features = ["lua54", "vendored", "async"] }
+grammers-mtsender = { git = "https://codeberg.org/Lonami/grammers.git" }
+grammers-tl-types = { git = "https://codeberg.org/Lonami/grammers.git" }
+grammers-session = { git = "https://codeberg.org/Lonami/grammers.git" }
+grammers-client = { git = "https://codeberg.org/Lonami/grammers.git" }
+grammers-crypto = { git = "https://codeberg.org/Lonami/grammers.git" }
+aes-gcm = { version = "0.11.0", features = ["getrandom"] }
+serde = { version = "1.0.229", features = ["derive"] }
+rand = { version = "0.10.2", features = ["sys_rng"] }
+tokio = { version = "1.53.1", features = ["full"] }
+argon2 = { version = "0.5.3", features = ["std"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-appender = "0.2.5"
+async-trait = "0.1.91"
+directories = "6.0.0"
+thiserror = "2.0.19"
+validator = "0.21.0"
+tracing = "0.1.44"
+inquire = "0.9.4"
+toml = "1.1.4"
+base64 = "0.22"
+hex = "0.4"
+regex = "1.10"

@@ -6,25 +6,25 @@ The project is a CLI-focused rewrite of [NoxGram](https://github.com/lamefate22/
 
 ## Features
 
-- Native Telegram user authorization through MTProto, powered by `grammers`
-- Interactive terminal login with SMS codes and Telegram 2FA support
-- Multiple saved accounts with encrypted local sessions
-- Argon2id password-based key derivation and AES-256-GCM authenticated encryption
-- Embedded Lua 5.4 runtime, with no separate Lua installation required
 - Telethon-like message filters for chats, senders, direction, chat type, commands, text, and regular expressions
-- Automatic discovery of `.lua` scripts in `data/bots/`
+- Argon2id password-based key derivation and AES-256-GCM authenticated encryption
 - Minimal dark-terminal interface with consistent interactive prompt styling
-- Structured daily log files with seven-file retention
+- Native Telegram user authorization through MTProto, powered by `grammers`
+- Embedded Lua 5.4 runtime, with no separate Lua installation required
+- Interactive terminal login with SMS codes and Telegram 2FA support
 - Cross-platform Rust codebase for Windows, Linux, and macOS
+- Multiple saved accounts with encrypted local sessions
+- Automatic discovery of `.lua` scripts in `data/bots/`
+- Structured daily log files with seven-file retention
 
 ## Requirements
 
 To build OxideGram from source, install:
 
-- [Rust](https://www.rust-lang.org/tools/install) with Cargo and a toolchain that supports Rust 2024 edition
-- Git
-- A C/C++ build toolchain required by native dependencies
 - A Telegram `API_ID` and `API_HASH` from [my.telegram.org](https://my.telegram.org/)
+- Rust with Cargo and a toolchain that supports Rust 2024 edition
+- A C/C++ build toolchain required by native dependencies
+- Git
 
 Common native toolchains are Visual Studio Build Tools on Windows, `build-essential` on Debian/Ubuntu, and Xcode Command Line Tools on macOS.
 
@@ -35,7 +35,7 @@ Prebuilt packages can be downloaded from the repository's **Releases** page when
 To build the latest source version:
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/lamefate22/OxideGram
 cd OxideGram
 cargo build --release
 ```
@@ -50,8 +50,6 @@ You can also start the development build directly:
 ```bash
 cargo run
 ```
-
-The repository does not currently have a configured Git remote, so replace `<repository-url>` with the URL where OxideGram is published.
 
 ## First Run
 

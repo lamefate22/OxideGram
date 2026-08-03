@@ -3,6 +3,7 @@
 //! Provides styled input prompts for text, passwords, numbers, selection lists, and confirmations.
 
 use crate::application::authentication::LoginConsole;
+use crate::application::automation::BotConsole;
 use inquire::{
     Autocomplete, Confirm, CustomType, CustomUserError, Password, Select, Text,
     ui::{Attributes, Color, ErrorMessageRenderConfig, RenderConfig, StyleSheet, Styled},
@@ -167,5 +168,19 @@ impl LoginConsole for OxideConsole {
 
     fn ask_autocomplete(&self, prompt: &str, choices: Vec<String>) -> Result<String, String> {
         OxideConsole::ask_autocomplete(self, prompt, choices)
+    }
+}
+
+impl BotConsole for OxideConsole {
+    fn ask_input(&self, prompt: &str, default: Option<&str>) -> Result<String, String> {
+        let input = Text::new(prompt).with_render_config(render_config());
+        let input = match default {
+            Some(value) => input.with_default(value),
+            None => input,
+        };
+
+        input
+            .prompt()
+            .map_err(|error| format!("Failed to get bot configuration input: {error}"))
     }
 }

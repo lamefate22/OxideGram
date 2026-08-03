@@ -4,10 +4,12 @@
 //! supports Telethon-like filters for peers, direction, chat type, text, commands, and patterns,
 //! listens for MTProto updates, and dispatches matching messages to registered Lua callbacks.
 
+use crate::application::automation::BotConsole;
 use crate::domain::automation::{ChatType, MessageContext, MessageFilter};
 use crate::errors::{OxideError, ScriptError};
 use grammers_client::Client;
 use grammers_client::client::UpdatesConfiguration;
+use grammers_client::message::InputMessage;
 use grammers_client::update::Update;
 use grammers_session::types::{PeerAuth, PeerId, PeerKind, PeerRef};
 use grammers_session::updates::UpdatesLike;
@@ -119,6 +121,7 @@ pub struct LuaBotRunner {
     pub updates: mpsc::UnboundedReceiver<UpdatesLike>,
     pub lua: Lua,
     pub message_handlers: Arc<Mutex<Vec<RegisteredHandler>>>,
+    console: Arc<dyn BotConsole>,
 }
 
 impl LuaBotRunner {
@@ -127,6 +130,7 @@ impl LuaBotRunner {
     pub fn new(
         client: Client,
         updates: mpsc::UnboundedReceiver<UpdatesLike>,
+        console: Arc<dyn BotConsole>,
     ) -> Result<Self, OxideError> {
         let lua = Lua::new();
         let message_handlers = Arc::new(Mutex::new(Vec::new()));
@@ -136,6 +140,7 @@ impl LuaBotRunner {
             updates,
             lua,
             message_handlers,
+            console,
         })
     }
 
@@ -193,6 +198,70 @@ impl LuaBotRunner {
         // ox.reply(chat_id, text, delay_sec)
         ox_table
             .set("reply", send_msg_fn)
+            .map_err(ScriptError::LuaError)?;
+
+        // ox.send_image(chat_id, path, optional_caption, optional_delay_sec)
+        let client_clone = client.clone();
+        let send_image_fn = self
+            .lua
+            .create_async_function(
+                move |_,
+                      (chat_id, path, caption, delay): (
+                    i64,
+                    String,
+                    Option<String>,
+                    Option<f64>,
+                )| {
+                    let client = client_clone.clone();
+                    async move {
+                        if let Some(delay) = delay
+                            && delay > 0.0
+                        {
+                            tokio::time::sleep(std::time::Duration::from_secs_f64(delay)).await;
+                        }
+
+                        let uploaded = client.upload_file(&path).await.map_err(|error| {
+                            mlua::Error::RuntimeError(format!(
+                                "Failed to upload image '{path}': {error}"
+                            ))
+                        })?;
+                        let message = InputMessage::new()
+                            .text(caption.unwrap_or_default())
+                            .photo(uploaded);
+                        let peer_ref = PeerRef {
+                            id: PeerId::user_unchecked(chat_id),
+                            auth: PeerAuth::from_hash(0),
+                        };
+
+                        client
+                            .send_message(peer_ref, message)
+                            .await
+                            .map_err(|error| {
+                                mlua::Error::RuntimeError(format!(
+                                    "Telegram image send error: {error}"
+                                ))
+                            })?;
+                        Ok(())
+                    }
+                },
+            )
+            .map_err(ScriptError::LuaError)?;
+        ox_table
+            .set("send_image", send_image_fn)
+            .map_err(ScriptError::LuaError)?;
+
+        // ox.input(prompt, optional_default)
+        let console = Arc::clone(&self.console);
+        let input_fn = self
+            .lua
+            .create_function(move |_, (prompt, default): (String, Option<String>)| {
+                console
+                    .ask_input(&prompt, default.as_deref())
+                    .map_err(mlua::Error::RuntimeError)
+            })
+            .map_err(ScriptError::LuaError)?;
+        ox_table
+            .set("input", input_fn)
             .map_err(ScriptError::LuaError)?;
 
         // ox.on_message(filters_or_func, optional_func)
@@ -415,7 +484,9 @@ impl LuaBotRunner {
 mod tests {
     use super::parse_message_filter;
     use crate::domain::automation::{ChatType, MessageContext};
-    use mlua::Lua;
+    use mlua::{Function, Lua, Table, Value};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn parses_and_matches_combined_filters() {
@@ -482,5 +553,50 @@ mod tests {
 
         assert!(parse_message_filter(&invalid_type).is_err());
         assert!(parse_message_filter(&invalid_pattern).is_err());
+    }
+
+    #[test]
+    fn anonchat_script_loads_with_startup_input_api() {
+        let lua = Lua::new();
+        let ox = lua.create_table().unwrap();
+        let input = lua
+            .create_function(
+                |_, (prompt, _): (String, Option<String>)| match prompt.as_str() {
+                    "Enable premium search? [y/N]" => Ok("n"),
+                    "Spam mode (text/photo/combined)" => Ok("text"),
+                    "Message to send" => Ok("hello"),
+                    _ => Err(mlua::Error::RuntimeError(format!(
+                        "unexpected prompt: {prompt}"
+                    ))),
+                },
+            )
+            .unwrap();
+        let handlers = Arc::new(AtomicUsize::new(0));
+        let handler_count = Arc::clone(&handlers);
+        let on_message = lua
+            .create_function(move |_, (_filter, _callback): (Table, Function)| {
+                handler_count.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            })
+            .unwrap();
+
+        ox.set("input", input).unwrap();
+        ox.set("on_message", on_message).unwrap();
+        ox.set(
+            "send_message",
+            lua.create_function(|_, _: Value| Ok(())).unwrap(),
+        )
+        .unwrap();
+        ox.set(
+            "send_image",
+            lua.create_function(|_, _: Value| Ok(())).unwrap(),
+        )
+        .unwrap();
+        lua.globals().set("ox", ox).unwrap();
+
+        lua.load(include_str!("../../data/bots/anonchat.lua"))
+            .exec()
+            .unwrap();
+        assert_eq!(handlers.load(Ordering::Relaxed), 1);
     }
 }

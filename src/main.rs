@@ -11,6 +11,7 @@ mod presentation;
 use errors::OxideError;
 use std::error::Error;
 use std::process::ExitCode;
+use std::sync::Arc;
 use tracing::{error, info};
 
 #[tokio::main]
@@ -54,12 +55,12 @@ async fn run() -> Result<(), OxideError> {
     use infrastructure::telegram_auth::GrammersAuthGateway;
     use presentation::console::OxideConsole;
 
-    let console = OxideConsole::new();
+    let console = Arc::new(OxideConsole::new());
     console.print_header();
     let mut config = OxideConfig::default();
 
     let telegram = GrammersAuthGateway;
-    let mut login = LoginService::new(&mut config, &console, &telegram);
+    let mut login = LoginService::new(&mut config, console.as_ref(), &telegram);
     let authenticated = login.login().await?;
 
     let loader = FileSystemScriptCatalog::default();
@@ -81,7 +82,8 @@ async fn run() -> Result<(), OxideError> {
 
     if let Some(selected_bot) = bots.into_iter().find(|b| b.name == selected_name) {
         let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
-        let mut runner = LuaBotRunner::new(authenticated.client, authenticated.updates)?;
+        let mut runner =
+            LuaBotRunner::new(authenticated.client, authenticated.updates, console.clone())?;
         runner.load_script(&selected_bot.path).await?;
         console.print(&format!(
             "[running] {}  |  press Ctrl+C to stop",

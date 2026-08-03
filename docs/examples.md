@@ -45,6 +45,19 @@ end)
 
 Restrict this with `senders` or `chats` while testing to avoid replying to every private dialog.
 
+## Startup Configuration And Photo
+
+```lua
+local image_path = ox.input("Image path")
+local caption = ox.input("Caption", "Sent by OxideGram")
+
+ox.on_message({ incoming = true, private = true, commands = "photo" }, function(event)
+    ox.send_image(event.chat_id, image_path, caption, 1)
+end)
+```
+
+Input prompts run while the script loads. Keep them outside message handlers.
+
 ## Pattern Matcher
 
 ```lua

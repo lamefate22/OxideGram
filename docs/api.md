@@ -73,6 +73,38 @@ ox.reply(event.chat_id, "Reply text", 0)
 
 At present, sending is most reliable when the destination is a private user ID. The current engine constructs a user peer reference from the numeric ID and does not resolve arbitrary groups or channels before sending.
 
+### `ox.send_image(chat_id, path[, caption[, delay_sec]])`
+
+Uploads a local image and sends it as a Telegram photo. Telegram may compress the image and convert it to JPEG.
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `chat_id` | integer | Destination ID, with the same peer limitation as `send_message`. |
+| `path` | string | Path to a readable local image file. Relative paths use OxideGram's working directory. |
+| `caption` | string or nil | Optional photo caption. Pass `nil` or `""` for no caption. |
+| `delay_sec` | number or nil | Optional delay before upload and sending. |
+
+```lua
+ox.send_image(event.chat_id, "data/photo.jpg")
+ox.send_image(event.chat_id, "data/photo.jpg", "Caption")
+ox.send_image(event.chat_id, "data/photo.jpg", "Delayed caption", 2.5)
+```
+
+An unreadable file or Telegram upload/send failure raises a Lua runtime error and is written to the application log.
+
+## Script Configuration Input
+
+### `ox.input(prompt[, default])`
+
+Shows a styled text prompt while the selected script is loading and returns the entered string. This is intended for startup configuration, before handlers begin receiving updates.
+
+```lua
+local greeting = ox.input("Greeting text", "Hello")
+local image_path = ox.input("Path to an image")
+```
+
+`default` is optional and is submitted when the user presses Enter without typing a value. Canceling the prompt prevents the script from starting. Do not call `ox.input` from message handlers: synchronous terminal input would block event processing.
+
 ## Event Table
 
 Each message callback receives one `event` table.

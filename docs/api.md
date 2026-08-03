@@ -71,7 +71,7 @@ ox.send_message(event.chat_id, "Delay omitted")
 ox.reply(event.chat_id, "Reply text", 0)
 ```
 
-At present, sending is most reliable when the destination is a private user ID. The current engine constructs a user peer reference from the numeric ID and does not resolve arbitrary groups or channels before sending.
+The runtime remembers peer references from received messages. Sending to `event.chat_id`, or to a chat that has already produced an update during the current run, preserves the peer type and Telegram access hash. Sending to an ID that has not been observed yet returns an explicit `Telegram peer ... is unknown` error.
 
 ### `ox.send_image(chat_id, path[, caption[, delay_sec]])`
 
@@ -79,7 +79,7 @@ Uploads a local image and sends it as a Telegram photo. Telegram may compress th
 
 | Parameter | Type | Description |
 | --- | --- | --- |
-| `chat_id` | integer | Destination ID, with the same peer limitation as `send_message`. |
+| `chat_id` | integer | Destination ID, with the same peer-resolution behavior as `send_message`. |
 | `path` | string | Path to a readable local image file. Relative paths use OxideGram's working directory. |
 | `caption` | string or nil | Optional photo caption. Pass `nil` or `""` for no caption. |
 | `delay_sec` | number or nil | Optional delay before upload and sending. |

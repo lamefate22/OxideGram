@@ -11,14 +11,15 @@ use grammers_client::Client;
 use grammers_client::client::UpdatesConfiguration;
 use grammers_client::message::InputMessage;
 use grammers_client::update::Update;
-use grammers_session::types::{PeerAuth, PeerId, PeerKind, PeerRef};
+use grammers_session::types::{PeerKind, PeerRef};
 use grammers_session::updates::UpdatesLike;
 use mlua::{Function, Lua, RegistryKey, Table, Value};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::sync::{Mutex, watch};
-use tracing::{error, info, warn};
+use tokio::sync::{Mutex, RwLock, watch};
+use tracing::{debug, error, info, warn};
 
 /// Converts Lua filter values into the domain filter model.
 fn parse_message_filter(table: &Table) -> Result<MessageFilter, mlua::Error> {
@@ -121,6 +122,7 @@ pub struct LuaBotRunner {
     pub updates: mpsc::UnboundedReceiver<UpdatesLike>,
     pub lua: Lua,
     pub message_handlers: Arc<Mutex<Vec<RegisteredHandler>>>,
+    peer_refs: Arc<RwLock<HashMap<i64, PeerRef>>>,
     console: Arc<dyn BotConsole>,
 }
 
@@ -134,12 +136,14 @@ impl LuaBotRunner {
     ) -> Result<Self, OxideError> {
         let lua = Lua::new();
         let message_handlers = Arc::new(Mutex::new(Vec::new()));
+        let peer_refs = Arc::new(RwLock::new(HashMap::new()));
 
         Ok(Self {
             client,
             updates,
             lua,
             message_handlers,
+            peer_refs,
             console,
         })
     }
@@ -157,17 +161,20 @@ impl LuaBotRunner {
 
         let client = self.client.clone();
         let handlers = Arc::clone(&self.message_handlers);
+        let peer_refs = Arc::clone(&self.peer_refs);
 
         let globals = self.lua.globals();
         let ox_table = self.lua.create_table().map_err(ScriptError::LuaError)?;
 
         // ox.send_message(chat_id, text, delay_sec)
         let client_clone = client.clone();
+        let send_peer_refs = Arc::clone(&peer_refs);
         let send_msg_fn = self
             .lua
             .create_async_function(
                 move |_, (chat_id, text, delay): (i64, String, Option<f64>)| {
                     let client = client_clone.clone();
+                    let peer_refs = Arc::clone(&send_peer_refs);
                     async move {
                         if let Some(d) = delay
                             && d > 0.0
@@ -175,11 +182,16 @@ impl LuaBotRunner {
                             tokio::time::sleep(std::time::Duration::from_secs_f64(d)).await;
                         }
 
-                        let peer_id = PeerId::user_unchecked(chat_id);
-                        let peer_ref = PeerRef {
-                            id: peer_id,
-                            auth: PeerAuth::from_hash(0),
-                        };
+                        let peer_ref = peer_refs
+                            .read()
+                            .await
+                            .get(&chat_id)
+                            .copied()
+                            .ok_or_else(|| {
+                                mlua::Error::RuntimeError(format!(
+                                    "Telegram peer {chat_id} is unknown; receive a message from it first"
+                                ))
+                            })?;
 
                         client.send_message(peer_ref, text).await.map_err(|e| {
                             mlua::Error::RuntimeError(format!("Telegram send error: {e}"))
@@ -202,6 +214,7 @@ impl LuaBotRunner {
 
         // ox.send_image(chat_id, path, optional_caption, optional_delay_sec)
         let client_clone = client.clone();
+        let image_peer_refs = Arc::clone(&peer_refs);
         let send_image_fn = self
             .lua
             .create_async_function(
@@ -213,6 +226,7 @@ impl LuaBotRunner {
                     Option<f64>,
                 )| {
                     let client = client_clone.clone();
+                    let peer_refs = Arc::clone(&image_peer_refs);
                     async move {
                         if let Some(delay) = delay
                             && delay > 0.0
@@ -228,10 +242,16 @@ impl LuaBotRunner {
                         let message = InputMessage::new()
                             .text(caption.unwrap_or_default())
                             .photo(uploaded);
-                        let peer_ref = PeerRef {
-                            id: PeerId::user_unchecked(chat_id),
-                            auth: PeerAuth::from_hash(0),
-                        };
+                        let peer_ref = peer_refs
+                            .read()
+                            .await
+                            .get(&chat_id)
+                            .copied()
+                            .ok_or_else(|| {
+                                mlua::Error::RuntimeError(format!(
+                                    "Telegram peer {chat_id} is unknown; receive a message from it first"
+                                ))
+                            })?;
 
                         client
                             .send_message(peer_ref, message)
@@ -282,13 +302,17 @@ impl LuaBotRunner {
                 };
 
                 let key = lua_ctx.create_registry_value(func)?;
-                let handlers = Arc::clone(&handlers);
-                tokio::spawn(async move {
-                    handlers.lock().await.push(RegisteredHandler {
+                handlers
+                    .try_lock()
+                    .map_err(|_| {
+                        mlua::Error::RuntimeError(
+                            "Cannot register a message handler while handlers are running".into(),
+                        )
+                    })?
+                    .push(RegisteredHandler {
                         callback_key: key,
                         filter,
                     });
-                });
                 Ok(())
             })
             .map_err(ScriptError::LuaError)?;
@@ -360,15 +384,22 @@ impl LuaBotRunner {
                 }
 
                 let text = message.text().to_string();
-                // Skip messages without a resolved peer.
-                if message.peer().is_none() {
-                    continue;
-                }
-
                 let Some(chat_id) = message.peer_id().bare_id() else {
                     warn!("Skipping message with unresolved chat ID");
                     continue;
                 };
+                let peer_ref = match message.peer_ref().await {
+                    Ok(Some(peer_ref)) => peer_ref,
+                    Ok(None) => {
+                        warn!(chat_id, "Skipping message with unresolved Telegram peer");
+                        continue;
+                    }
+                    Err(error) => {
+                        warn!(chat_id, error = %error, "Failed to resolve Telegram peer");
+                        continue;
+                    }
+                };
+                self.peer_refs.write().await.insert(chat_id, peer_ref);
                 let sender_id = message.sender_id().and_then(|id| id.bare_id()).unwrap_or(0);
                 let outgoing = message.outgoing();
                 let incoming = !outgoing;
@@ -380,6 +411,13 @@ impl LuaBotRunner {
                 let is_private = chat_type == ChatType::Private;
                 let is_group = chat_type == ChatType::Group;
                 let is_channel = chat_type == ChatType::Channel;
+                debug!(
+                    chat_id,
+                    sender_id,
+                    incoming,
+                    text = %text,
+                    "Telegram message received"
+                );
 
                 let event_table = match self.lua.create_table() {
                     Ok(t) => t,
@@ -426,12 +464,6 @@ impl LuaBotRunner {
                                 tokio::time::sleep(std::time::Duration::from_secs_f64(d)).await;
                             }
 
-                            let peer_id = PeerId::user_unchecked(chat_id);
-                            let peer_ref = PeerRef {
-                                id: peer_id,
-                                auth: PeerAuth::from_hash(0),
-                            };
-
                             client
                                 .send_message(peer_ref, reply_text)
                                 .await
@@ -464,12 +496,14 @@ impl LuaBotRunner {
                             chat_type,
                         };
                         if !filter.matches(&context) {
+                            debug!(chat_id, sender_id, "Lua message filter did not match");
                             continue;
                         }
                     }
 
+                    debug!(chat_id, sender_id, "Running Lua message handler");
                     if let Ok(func) = self.lua.registry_value::<Function>(&item.callback_key)
-                        && let Err(err) = func.call::<()>(event_table.clone())
+                        && let Err(err) = func.call_async::<()>(event_table.clone()).await
                     {
                         error!(chat_id, sender_id, error = %err, "Lua message handler failed");
                     }
@@ -598,5 +632,27 @@ mod tests {
             .exec()
             .unwrap();
         assert_eq!(handlers.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn async_lua_api_runs_inside_message_handler() {
+        let lua = Lua::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let call_count = Arc::clone(&calls);
+        let send = lua
+            .create_async_function(move |_, ()| {
+                let call_count = Arc::clone(&call_count);
+                async move {
+                    call_count.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                }
+            })
+            .unwrap();
+        lua.globals().set("send", send).unwrap();
+        let handler: Function = lua.load("return function() send() end").eval().unwrap();
+
+        handler.call_async::<()>(()).await.unwrap();
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 }

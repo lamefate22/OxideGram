@@ -35,6 +35,7 @@ After authorization, select `hello` from the script list. Scripts are loaded onc
 4. OxideGram starts the Telegram update stream.
 5. Every new message is converted into an event table and dispatched to each matching handler.
 6. A handler error is logged and does not prevent later handlers from running.
+7. The loop runs until the update stream ends, the user presses Ctrl+C, or Lua calls `ox.stop()`.
 
 There is currently no hot reload, timer API, media API, edit/delete handler, or module-level persistent storage provided by OxideGram.
 

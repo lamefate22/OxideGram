@@ -1,8 +1,8 @@
 //! Lua bot runtime environment built on top of `mlua` and Tokio async tasks.
 //!
-//! Exposes helper functions (`ox.send_message`, `ox.reply`, `ox.on_message`) to Lua bot scripts,
-//! supports Telethon-like filters for peers, direction, chat type, text, commands, and patterns,
-//! listens for MTProto updates, and dispatches matching messages to registered Lua callbacks.
+//! Exposes helper functions (`ox.send_message`, `ox.reply`, `ox.on_message`, `ox.stop`) to Lua bot
+//! scripts, supports Telethon-like filters for peers, direction, chat type, text, commands, and
+//! patterns, listens for MTProto updates, and dispatches matching messages to registered callbacks.
 
 use crate::application::automation::BotConsole;
 use crate::domain::automation::{ChatType, MessageContext, MessageFilter};
@@ -110,6 +110,13 @@ fn invalid_filter_type(key: &str, expected: &str, value: &Value) -> mlua::Error 
     ))
 }
 
+fn create_stop_function(lua: &Lua, stop_tx: watch::Sender<bool>) -> mlua::Result<Function> {
+    lua.create_function(move |_, ()| {
+        stop_tx.send_replace(true);
+        Ok(())
+    })
+}
+
 /// Registered message handler entry containing Lua callback key and optional filter.
 pub struct RegisteredHandler {
     pub callback_key: RegistryKey,
@@ -124,6 +131,8 @@ pub struct LuaBotRunner {
     pub message_handlers: Arc<Mutex<Vec<RegisteredHandler>>>,
     peer_refs: Arc<RwLock<HashMap<i64, PeerRef>>>,
     console: Arc<dyn BotConsole>,
+    stop_tx: watch::Sender<bool>,
+    stop_rx: watch::Receiver<bool>,
 }
 
 impl LuaBotRunner {
@@ -137,6 +146,7 @@ impl LuaBotRunner {
         let lua = Lua::new();
         let message_handlers = Arc::new(Mutex::new(Vec::new()));
         let peer_refs = Arc::new(RwLock::new(HashMap::new()));
+        let (stop_tx, stop_rx) = watch::channel(false);
 
         Ok(Self {
             client,
@@ -145,6 +155,8 @@ impl LuaBotRunner {
             message_handlers,
             peer_refs,
             console,
+            stop_tx,
+            stop_rx,
         })
     }
 
@@ -284,6 +296,13 @@ impl LuaBotRunner {
             .set("input", input_fn)
             .map_err(ScriptError::LuaError)?;
 
+        // ox.stop()
+        let stop_fn =
+            create_stop_function(&self.lua, self.stop_tx.clone()).map_err(ScriptError::LuaError)?;
+        ox_table
+            .set("stop", stop_fn)
+            .map_err(ScriptError::LuaError)?;
+
         // ox.on_message(filters_or_func, optional_func)
         let register_handler_fn = self
             .lua
@@ -339,36 +358,43 @@ impl LuaBotRunner {
 
     /// Starts listening for incoming MTProto updates and invokes registered Lua handlers matching filters.
     ///
-    /// Returns when the updates stream ends or when `cancel_rx` signals cancellation.
-    pub async fn run_event_loop(
-        self,
-        mut cancel_rx: watch::Receiver<bool>,
-    ) -> Result<(), OxideError> {
+    /// Returns when the update stream ends, Lua calls `ox.stop()`, or the user presses Ctrl+C.
+    pub async fn run_event_loop(self) -> Result<(), OxideError> {
         info!(
             handler_count = self.message_handlers.lock().await.len(),
             "Bot event loop started"
         );
         let updates = self.updates;
+        let mut stop_rx = self.stop_rx;
         let mut stream = self
             .client
             .stream_updates(updates, UpdatesConfiguration::default())
             .await
             .map_err(|e| ScriptError::UpdateStream(e.to_string()))?;
+        let ctrl_c = tokio::signal::ctrl_c();
+        tokio::pin!(ctrl_c);
 
         loop {
-            if *cancel_rx.borrow() {
-                info!("Bot event loop cancelled.");
+            if *stop_rx.borrow() {
+                info!("Bot event loop stopped by Lua script");
                 break;
             }
 
             let update = tokio::select! {
                 biased;
-                changed = cancel_rx.changed() => {
-                    if changed.is_ok() && *cancel_rx.borrow() {
-                        info!("Bot event loop cancelled.");
+                changed = stop_rx.changed() => {
+                    if changed.is_ok() && *stop_rx.borrow() {
+                        info!("Bot event loop stopped by Lua script");
                         break;
                     }
                     continue;
+                }
+                signal = &mut ctrl_c => {
+                    match signal {
+                        Ok(()) => info!("Bot event loop stopped by Ctrl+C"),
+                        Err(error) => warn!(error = %error, "Failed to listen for Ctrl+C"),
+                    }
+                    break;
                 }
                 next = stream.next() => next,
             };
@@ -507,6 +533,9 @@ impl LuaBotRunner {
                     {
                         error!(chat_id, sender_id, error = %err, "Lua message handler failed");
                     }
+                    if *stop_rx.borrow() {
+                        break;
+                    }
                 }
             }
         }
@@ -516,7 +545,7 @@ impl LuaBotRunner {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_message_filter;
+    use super::{create_stop_function, parse_message_filter};
     use crate::domain::automation::{ChatType, MessageContext};
     use mlua::{Function, Lua, Table, Value};
     use std::sync::Arc;
@@ -654,5 +683,17 @@ mod tests {
         handler.call_async::<()>(()).await.unwrap();
 
         assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn stop_api_requests_idempotent_shutdown() {
+        let lua = Lua::new();
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let stop = create_stop_function(&lua, stop_tx).unwrap();
+        lua.globals().set("stop", stop).unwrap();
+
+        lua.load("stop(); stop()").exec().unwrap();
+
+        assert!(*stop_rx.borrow());
     }
 }

@@ -83,6 +83,20 @@ ox.on_message({ incoming = true, group = true, commands = "hello" }, greet)
 
 Registering twice expresses OR between chat types while preserving AND inside each filter table.
 
+## Stop On A Message
+
+```lua
+local ADMIN_ID = 123456789
+
+ox.on_message({ senders = ADMIN_ID, incoming = true, commands = "stop" }, function(event)
+    ox.send_message(event.chat_id, "Bot stopped", 0)
+    ox.stop()
+    return
+end)
+```
+
+Restrict remote stop handlers by `senders` or `chats`. The current handler finishes before the event loop exits.
+
 ## Inspect Event Metadata
 
 ```lua

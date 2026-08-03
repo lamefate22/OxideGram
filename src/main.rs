@@ -81,7 +81,6 @@ async fn run() -> Result<(), OxideError> {
     };
 
     if let Some(selected_bot) = bots.into_iter().find(|b| b.name == selected_name) {
-        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
         let mut runner =
             LuaBotRunner::new(authenticated.client, authenticated.updates, console.clone())?;
         runner.load_script(&selected_bot.path).await?;
@@ -89,7 +88,7 @@ async fn run() -> Result<(), OxideError> {
             "[running] {}  |  press Ctrl+C to stop",
             selected_bot.name
         ));
-        runner.run_event_loop(cancel_rx).await?;
+        runner.run_event_loop().await?;
     }
 
     Ok(())

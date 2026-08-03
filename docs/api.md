@@ -92,6 +92,22 @@ ox.send_image(event.chat_id, "data/photo.jpg", "Delayed caption", 2.5)
 
 An unreadable file or Telegram upload/send failure raises a Lua runtime error and is written to the application log.
 
+## Stopping The Bot
+
+### `ox.stop()`
+
+Requests a graceful stop of the selected bot's event loop. The current handler continues until it returns, so place `return` after `ox.stop()` when no later statements should run:
+
+```lua
+ox.on_message({ incoming = true, commands = "stop" }, function(event)
+    ox.send_message(event.chat_id, "Bot stopped", 0)
+    ox.stop()
+    return
+end)
+```
+
+`ox.stop()` stops message processing and returns control to OxideGram. It does not terminate the process abruptly. Calling it more than once is safe. Pressing Ctrl+C provides the same graceful event-loop termination from the terminal.
+
 ## Script Configuration Input
 
 ### `ox.input(prompt[, default])`

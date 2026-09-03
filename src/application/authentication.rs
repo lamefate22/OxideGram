@@ -6,7 +6,6 @@ use async_trait::async_trait;
 
 #[async_trait]
 pub trait SessionRepository: Send {
-    async fn load(&mut self) -> Result<(), OxideError>;
     fn session_phones(&self) -> Vec<String>;
     fn session(&self, phone: &str) -> Option<SavedSession>;
     async fn save_session(
@@ -29,18 +28,28 @@ pub enum SignInStatus<T> {
     PasswordRequired(T),
 }
 
-#[async_trait]
-pub trait TelegramAuthGateway: Sync {
+/// Common trait providing associated Connected client type.
+pub trait ConnectedSession {
     type Connected;
-    type PendingLogin: Send;
-    type PasswordToken: Send;
+}
 
+/// Port responsible for restoring an existing authorized Telegram session.
+#[async_trait]
+pub trait SessionRestorer: ConnectedSession + Sync {
     async fn restore(
         &self,
         phone: &str,
         password: &str,
         session: SavedSession,
     ) -> Result<Self::Connected, OxideError>;
+}
+
+/// Port responsible for interactive manual authentication via login code and 2FA.
+#[async_trait]
+pub trait InteractiveAuthenticator: ConnectedSession + Sync {
+    type PendingLogin: Send;
+    type PasswordToken: Send;
+
     async fn request_login_code(
         &self,
         phone: &str,
@@ -63,8 +72,13 @@ pub trait TelegramAuthGateway: Sync {
         pending: &Self::PendingLogin,
         password: &str,
     ) -> Result<SavedSession, OxideError>;
-    fn complete(&self, pending: Self::PendingLogin) -> Self::Connected;
+    fn complete(&self, pending: Self::PendingLogin, password: &str) -> Self::Connected;
 }
+
+/// Combined authentication gateway unifying session restoration and interactive authentication.
+pub trait TelegramAuthGateway: SessionRestorer + InteractiveAuthenticator {}
+
+impl<T> TelegramAuthGateway for T where T: SessionRestorer + InteractiveAuthenticator {}
 
 pub struct LoginService<'a, R, C, G> {
     sessions: &'a mut R,
@@ -87,7 +101,6 @@ where
     }
 
     pub async fn login(&mut self) -> Result<G::Connected, OxideError> {
-        self.sessions.load().await?;
         let use_saved = self
             .console
             .ask_confirm("Do you want to use auto-login?")
@@ -167,7 +180,7 @@ where
             .capture_session(&pending, &encryption_password)
             .await?;
         self.sessions.save_session(phone, session).await?;
-        Ok(self.telegram.complete(pending))
+        Ok(self.telegram.complete(pending, &encryption_password))
     }
 }
 
@@ -183,10 +196,6 @@ mod tests {
 
     #[async_trait]
     impl SessionRepository for MemorySessions {
-        async fn load(&mut self) -> Result<(), OxideError> {
-            Ok(())
-        }
-
         fn session_phones(&self) -> Vec<String> {
             self.sessions
                 .iter()
@@ -240,12 +249,12 @@ mod tests {
         restored_phone: Mutex<Option<String>>,
     }
 
-    #[async_trait]
-    impl TelegramAuthGateway for FakeGateway {
+    impl ConnectedSession for FakeGateway {
         type Connected = String;
-        type PendingLogin = ();
-        type PasswordToken = ();
+    }
 
+    #[async_trait]
+    impl SessionRestorer for FakeGateway {
         async fn restore(
             &self,
             phone: &str,
@@ -255,6 +264,12 @@ mod tests {
             *self.restored_phone.lock().unwrap() = Some(phone.to_string());
             Ok("connected".to_string())
         }
+    }
+
+    #[async_trait]
+    impl InteractiveAuthenticator for FakeGateway {
+        type PendingLogin = ();
+        type PasswordToken = ();
 
         async fn request_login_code(
             &self,
@@ -290,7 +305,7 @@ mod tests {
             unreachable!()
         }
 
-        fn complete(&self, _: Self::PendingLogin) -> Self::Connected {
+        fn complete(&self, _: Self::PendingLogin, _: &str) -> Self::Connected {
             unreachable!()
         }
     }

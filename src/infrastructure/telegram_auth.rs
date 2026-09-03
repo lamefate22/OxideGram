@@ -1,6 +1,8 @@
 //! Grammers and SQLite implementation of the Telegram authentication port.
 
-use crate::application::authentication::{SignInStatus, TelegramAuthGateway};
+use crate::application::authentication::{
+    ConnectedSession, InteractiveAuthenticator, SessionRepository, SessionRestorer, SignInStatus,
+};
 use crate::domain::identity::SavedSession;
 use crate::errors::{AuthError, OxideError};
 use crate::infrastructure::crypto;
@@ -20,6 +22,8 @@ use tracing::{info, warn};
 pub struct AuthenticatedClient {
     pub client: Client,
     pub updates: mpsc::Receiver<UpdatesLike>,
+    pub phone: String,
+    pub session_password: Option<String>,
 }
 
 pub struct PendingLogin {
@@ -28,11 +32,58 @@ pub struct PendingLogin {
     session_path: PathBuf,
     api_id: i32,
     api_hash: String,
+    phone: String,
     updates: mpsc::Receiver<UpdatesLike>,
 }
 
 #[derive(Default)]
 pub struct GrammersAuthGateway;
+
+impl GrammersAuthGateway {
+    /// Captures the latest SQLite session state from disk, re-encrypts it with the password,
+    /// persists it to the session repository, and securely removes plaintext SQLite files.
+    pub async fn persist_and_secure(
+        &self,
+        phone: &str,
+        password: &str,
+        repository: &mut (impl SessionRepository + ?Sized),
+    ) -> Result<(), OxideError> {
+        let path = session_path(phone);
+        if path.exists() {
+            let bytes = tokio::fs::read(&path)
+                .await
+                .map_err(|error| AuthError::SessionStorage(error.to_string()))?;
+            let salt = crypto::generate_salt()?;
+            let encrypted = crypto::encrypt_string(password, &salt, &hex::encode(bytes))?;
+
+            let (api_id, api_hash) = match repository.session(phone) {
+                Some(existing) => (existing.api_id, existing.api_hash),
+                None => (0, String::new()),
+            };
+
+            let updated_session = SavedSession {
+                salt: URL_SAFE_NO_PAD.encode(salt),
+                api_id,
+                api_hash,
+                session_string: encrypted,
+            };
+
+            repository
+                .save_session(phone.to_string(), updated_session)
+                .await?;
+            info!(phone, "Persisted and re-encrypted session to repository");
+
+            // Clean up plaintext SQLite file and temporary WAL/SHM files
+            let _ = tokio::fs::remove_file(&path).await;
+            let shm = path.with_extension("session-shm");
+            let _ = tokio::fs::remove_file(shm).await;
+            let wal = path.with_extension("session-wal");
+            let _ = tokio::fs::remove_file(wal).await;
+            info!(phone, "Cleaned up plaintext temporary session files");
+        }
+        Ok(())
+    }
+}
 
 async fn connect_session(
     path: &Path,
@@ -58,12 +109,12 @@ fn session_path(phone: &str) -> PathBuf {
         .join(format!("{clean_phone}.session"))
 }
 
-#[async_trait]
-impl TelegramAuthGateway for GrammersAuthGateway {
+impl ConnectedSession for GrammersAuthGateway {
     type Connected = AuthenticatedClient;
-    type PendingLogin = PendingLogin;
-    type PasswordToken = PasswordToken;
+}
 
+#[async_trait]
+impl SessionRestorer for GrammersAuthGateway {
     async fn restore(
         &self,
         phone: &str,
@@ -92,8 +143,19 @@ impl TelegramAuthGateway for GrammersAuthGateway {
             .map_err(|error| AuthError::SessionStorage(error.to_string()))?;
         let (client, updates) = connect_session(&path, session.api_id).await?;
         info!(phone, "Saved-session login completed");
-        Ok(AuthenticatedClient { client, updates })
+        Ok(AuthenticatedClient {
+            client,
+            updates,
+            phone: phone.to_string(),
+            session_password: Some(password.to_string()),
+        })
     }
+}
+
+#[async_trait]
+impl InteractiveAuthenticator for GrammersAuthGateway {
+    type PendingLogin = PendingLogin;
+    type PasswordToken = PasswordToken;
 
     async fn request_login_code(
         &self,
@@ -120,6 +182,7 @@ impl TelegramAuthGateway for GrammersAuthGateway {
             session_path: path,
             api_id,
             api_hash: api_hash.to_string(),
+            phone: phone.to_string(),
             updates,
         })
     }
@@ -175,10 +238,12 @@ impl TelegramAuthGateway for GrammersAuthGateway {
         })
     }
 
-    fn complete(&self, pending: Self::PendingLogin) -> Self::Connected {
+    fn complete(&self, pending: Self::PendingLogin, password: &str) -> Self::Connected {
         AuthenticatedClient {
             client: pending.client,
             updates: pending.updates,
+            phone: pending.phone,
+            session_password: Some(password.to_string()),
         }
     }
 }

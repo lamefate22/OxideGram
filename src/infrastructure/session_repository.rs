@@ -101,12 +101,16 @@ impl OxideConfig {
         let toml_string = toml::to_string_pretty(&self.data).map_err(ConfigError::Serialization)?;
         let tmp_path = self.path.with_extension("tmp");
 
-        fs::write(&tmp_path, toml_string)
-            .await
-            .map_err(ConfigError::Io)?;
-        fs::rename(&tmp_path, &self.path)
-            .await
-            .map_err(ConfigError::Io)?;
+        if let Err(e) = fs::write(&tmp_path, &toml_string).await {
+            let _ = fs::remove_file(&tmp_path).await;
+            return Err(ConfigError::Io(e).into());
+        }
+
+        if let Err(e) = fs::rename(&tmp_path, &self.path).await {
+            let _ = fs::remove_file(&tmp_path).await;
+            return Err(ConfigError::Io(e).into());
+        }
+
         debug!(path = %self.path.display(), "Configuration saved");
         Ok(())
     }
@@ -130,10 +134,6 @@ impl OxideConfig {
 
 #[async_trait]
 impl SessionRepository for OxideConfig {
-    async fn load(&mut self) -> Result<(), OxideError> {
-        OxideConfig::load(self).await
-    }
-
     fn session_phones(&self) -> Vec<String> {
         self.data.sessions.keys().cloned().collect()
     }

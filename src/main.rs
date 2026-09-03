@@ -58,6 +58,7 @@ async fn run() -> Result<(), OxideError> {
     let console = Arc::new(OxideConsole::new());
     console.print_header();
     let mut config = OxideConfig::default();
+    config.load().await?;
 
     let telegram = GrammersAuthGateway;
     let mut login = LoginService::new(&mut config, console.as_ref(), &telegram);
@@ -81,6 +82,8 @@ async fn run() -> Result<(), OxideError> {
     };
 
     if let Some(selected_bot) = bots.into_iter().find(|b| b.name == selected_name) {
+        let phone = authenticated.phone.clone();
+        let session_password = authenticated.session_password.clone();
         let mut runner =
             LuaBotRunner::new(authenticated.client, authenticated.updates, console.clone())?;
         runner.load_script(&selected_bot.path).await?;
@@ -88,7 +91,18 @@ async fn run() -> Result<(), OxideError> {
             "[running] {}  |  press Ctrl+C to stop",
             selected_bot.name
         ));
-        runner.run_event_loop().await?;
+        let run_res = runner.run_event_loop().await;
+
+        if let Some(password) = session_password {
+            if let Err(error) = telegram
+                .persist_and_secure(&phone, &password, &mut config)
+                .await
+            {
+                tracing::warn!(error = %error, "Failed to persist and secure encrypted session");
+            }
+        }
+
+        run_res?;
     }
 
     Ok(())

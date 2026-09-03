@@ -76,9 +76,12 @@ impl MessageFilter {
                 .text
                 .strip_prefix('/')
                 .and_then(|text| text.split_whitespace().next())
-                .and_then(|text| text.split('@').next())
-                .map(str::to_lowercase);
-            if !command.is_some_and(|command| commands.contains(&command)) {
+                .and_then(|text| text.split('@').next());
+            if !command.is_some_and(|cmd| {
+                commands
+                    .iter()
+                    .any(|c| c.trim_start_matches('/').eq_ignore_ascii_case(cmd))
+            }) {
                 return false;
             }
         }
@@ -134,6 +137,22 @@ mod tests {
             sender_id: 1,
             incoming: true,
             chat_type: ChatType::Group,
+        }));
+    }
+
+    #[test]
+    fn command_matching_with_slashes_and_mixed_case() {
+        let filter = MessageFilter {
+            commands: Some(vec!["/Help".to_string()]),
+            ..MessageFilter::default()
+        };
+
+        assert!(filter.matches(&MessageContext {
+            text: "/help",
+            chat_id: 1,
+            sender_id: 1,
+            incoming: true,
+            chat_type: ChatType::Private,
         }));
     }
 }

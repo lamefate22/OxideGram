@@ -93,13 +93,12 @@ async fn run() -> Result<(), OxideError> {
         ));
         let run_res = runner.run_event_loop().await;
 
-        if let Some(password) = session_password {
-            if let Err(error) = telegram
+        if let Some(password) = session_password
+            && let Err(error) = telegram
                 .persist_and_secure(&phone, &password, &mut config)
                 .await
-            {
-                tracing::warn!(error = %error, "Failed to persist and secure encrypted session");
-            }
+        {
+            tracing::warn!(error = %error, "Failed to persist and secure encrypted session");
         }
 
         run_res?;

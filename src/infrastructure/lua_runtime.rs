@@ -341,10 +341,7 @@ impl LuaBotRunner {
             .map_err(ScriptError::LuaError)?;
 
         globals
-            .set("ox", ox_table.clone())
-            .map_err(ScriptError::LuaError)?;
-        globals
-            .set("nox", ox_table)
+            .set("ox", ox_table)
             .map_err(ScriptError::LuaError)?;
 
         self.lua

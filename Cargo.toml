@@ -20,9 +20,7 @@ argon2 = { version = "0.5.3", features = ["std"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tracing-appender = "0.2.5"
 async-trait = "0.1.91"
-directories = "6.0.0"
 thiserror = "2.0.19"
-validator = "0.21.0"
 tracing = "0.1.44"
 inquire = "0.9.4"
 toml = "1.1.4"

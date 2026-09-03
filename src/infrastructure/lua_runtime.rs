@@ -8,9 +8,9 @@ use crate::application::automation::BotConsole;
 use crate::domain::automation::{ChatType, MessageContext, MessageFilter};
 use crate::errors::{OxideError, ScriptError};
 use grammers_client::Client;
-use grammers_client::client::UpdatesConfiguration;
 use grammers_client::message::InputMessage;
 use grammers_client::update::Update;
+use grammers_mtsender::UpdatesConfiguration;
 use grammers_session::types::{PeerKind, PeerRef};
 use grammers_session::updates::UpdatesLike;
 use mlua::{Function, Lua, RegistryKey, Table, Value};
@@ -126,7 +126,7 @@ pub struct RegisteredHandler {
 /// Runner responsible for binding Telegram methods to Lua, loading bot scripts, and handling updates.
 pub struct LuaBotRunner {
     pub client: Client,
-    pub updates: mpsc::UnboundedReceiver<UpdatesLike>,
+    pub updates: mpsc::Receiver<UpdatesLike>,
     pub lua: Lua,
     pub message_handlers: Arc<Mutex<Vec<RegisteredHandler>>>,
     peer_refs: Arc<RwLock<HashMap<i64, PeerRef>>>,
@@ -140,7 +140,7 @@ impl LuaBotRunner {
     ///
     pub fn new(
         client: Client,
-        updates: mpsc::UnboundedReceiver<UpdatesLike>,
+        updates: mpsc::Receiver<UpdatesLike>,
         console: Arc<dyn BotConsole>,
     ) -> Result<Self, OxideError> {
         let lua = Lua::new();

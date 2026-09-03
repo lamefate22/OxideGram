@@ -19,7 +19,7 @@ use tracing::{info, warn};
 
 pub struct AuthenticatedClient {
     pub client: Client,
-    pub updates: mpsc::UnboundedReceiver<UpdatesLike>,
+    pub updates: mpsc::Receiver<UpdatesLike>,
 }
 
 pub struct PendingLogin {
@@ -28,7 +28,7 @@ pub struct PendingLogin {
     session_path: PathBuf,
     api_id: i32,
     api_hash: String,
-    updates: mpsc::UnboundedReceiver<UpdatesLike>,
+    updates: mpsc::Receiver<UpdatesLike>,
 }
 
 #[derive(Default)]
@@ -37,7 +37,7 @@ pub struct GrammersAuthGateway;
 async fn connect_session(
     path: &Path,
     api_id: i32,
-) -> Result<(Client, mpsc::UnboundedReceiver<UpdatesLike>), OxideError> {
+) -> Result<(Client, mpsc::Receiver<UpdatesLike>), OxideError> {
     let session = SqliteSession::open(path)
         .await
         .map_err(|error| AuthError::SessionStorage(error.to_string()))?;

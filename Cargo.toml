@@ -10,6 +10,8 @@ grammers-tl-types = { git = "https://codeberg.org/Lonami/grammers.git" }
 grammers-session = { git = "https://codeberg.org/Lonami/grammers.git" }
 grammers-client = { git = "https://codeberg.org/Lonami/grammers.git" }
 grammers-crypto = { git = "https://codeberg.org/Lonami/grammers.git" }
+# Pinned to 2.0.0-rc0 due to breaking changes in glass_pumpkin 2.0.0-rc1 breaking grammers-crypto
+glass_pumpkin = "=2.0.0-rc0"
 aes-gcm = { version = "0.11.0", features = ["getrandom"] }
 serde = { version = "1.0.229", features = ["derive"] }
 rand = { version = "0.10.2", features = ["sys_rng"] }

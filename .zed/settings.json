@@ -1,0 +1,41 @@
+{
+  "languages": {
+    "Lua": {
+      "language_servers": [
+        "lua-language-server"
+      ]
+    }
+  },
+  "lsp": {
+    "lua-language-server": {
+      "settings": {
+        "Lua": {
+          "runtime": {
+            "version": "Lua 5.4"
+          },
+          "workspace": {
+            "library": [
+              "types"
+            ],
+            "checkThirdParty": false
+          },
+          "diagnostics": {
+            "globals": [
+              "ox",
+              "contains",
+              "starts_with",
+              "ends_with",
+              "split",
+              "trim"
+            ]
+          },
+          "hint": {
+            "enable": true,
+            "paramType": true,
+            "setType": true
+          }
+        }
+      }
+    }
+  }
+}

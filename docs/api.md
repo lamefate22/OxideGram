@@ -7,31 +7,15 @@ title: Lua API Reference
 
 [Documentation home](index.html) | [Filters](filters.html) | [Examples](examples.html)
 
-## Global Tables
+## Global `ox` Table
 
-### `ox`
+The main OxideGram automation API table.
 
-The main OxideGram API table.
+### Registering Handlers
 
-### `nox`
+#### `ox.on_message([filters, ]callback)`
 
-A compatibility alias that points to the same table as `ox`. Prefer `ox` in new scripts.
-
-## Registering Handlers
-
-### `ox.on_message(callback)`
-
-Registers a callback for every new message:
-
-```lua
-ox.on_message(function(event)
-    print(event.text)
-end)
-```
-
-### `ox.on_message(filters, callback)`
-
-Registers a callback for messages matching all supplied filters:
+Registers a message listener. If a filter table is provided, the callback only executes when all conditions match:
 
 ```lua
 ox.on_message({
@@ -39,131 +23,296 @@ ox.on_message({
     private = true,
     commands = "start"
 }, function(event)
-    ox.send_message(event.chat_id, "Welcome!", 0)
+    event.reply("Welcome to OxideGram! 🚀", { parse_mode = "markdown" })
 end)
 ```
 
-Filter tables are validated while the script loads. Invalid types, empty arrays, and invalid regular expressions stop script loading with an error. Unknown keys are currently ignored, so use the names from the [filter reference](filters.html).
+---
 
-Handlers run in registration order. Multiple matching handlers receive the same message. There is currently no propagation-stop mechanism.
+### Sending & Editing Messages
 
-## Sending Messages
+#### Message Options Table
 
-### `ox.send_message(chat_id, text[, delay_sec])`
+Methods taking an optional options argument accept either:
+- A `number`: interpreted as a delay in seconds (e.g. `1.5`).
+- A `table`: with fine-grained formatting and delay options:
+  - `delay`: number of seconds to wait before execution (with human-like jitter).
+  - `parse_mode`: `"markdown"` (or `"md"`) or `"html"` for styled text.
 
-Sends a text message.
+#### `ox.send_message(chat_id, text[, options_or_delay[, extra_delay]])`
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `chat_id` | integer | Destination ID, usually `event.chat_id`. |
-| `text` | string | Message text. |
-| `delay_sec` | number or nil | Optional delay before sending, in seconds. Fractions are supported. Non-positive values send immediately. |
+Sends a text message to the specified chat ID. Automatically handles `FloodWait` by backing off and retrying.
 
 ```lua
-ox.send_message(event.chat_id, "Immediate", 0)
-ox.send_message(event.chat_id, "After 1.5 seconds", 1.5)
-ox.send_message(event.chat_id, "Delay omitted")
+ox.send_message(event.chat_id, "Hello world!")
+ox.send_message(event.chat_id, "*Bold text*", { parse_mode = "markdown", delay = 1.0 })
 ```
 
-`ox.reply` is currently an alias with the same signature:
+#### `ox.edit_message(chat_id, message_id, new_text[, options])`
+
+Edits an existing message sent by your userbot.
 
 ```lua
-ox.reply(event.chat_id, "Reply text", 0)
+ox.edit_message(event.chat_id, event.message_id, "Updated text", { parse_mode = "markdown" })
 ```
 
-The runtime remembers peer references from received messages. Sending to `event.chat_id`, or to a chat that has already produced an update during the current run, preserves the peer type and Telegram access hash. Sending to an ID that has not been observed yet returns an explicit `Telegram peer ... is unknown` error.
+#### `ox.delete_message(chat_id, message_id[, delay])`
 
-### `ox.send_image(chat_id, path[, caption[, delay_sec]])`
-
-Uploads a local image and sends it as a Telegram photo. Telegram may compress the image and convert it to JPEG.
-
-| Parameter | Type | Description |
-| --- | --- | --- |
-| `chat_id` | integer | Destination ID, with the same peer-resolution behavior as `send_message`. |
-| `path` | string | Path to a readable local image file. Relative paths use OxideGram's working directory. |
-| `caption` | string or nil | Optional photo caption. Pass `nil` or `""` for no caption. |
-| `delay_sec` | number or nil | Optional delay before upload and sending. |
+Deletes a single message by ID.
 
 ```lua
-ox.send_image(event.chat_id, "data/photo.jpg")
-ox.send_image(event.chat_id, "data/photo.jpg", "Caption")
-ox.send_image(event.chat_id, "data/photo.jpg", "Delayed caption", 2.5)
+ox.delete_message(event.chat_id, event.message_id, 2.0)
 ```
 
-An unreadable file or Telegram upload/send failure raises a Lua runtime error and is written to the application log.
+#### `ox.delete_messages(chat_id, message_ids[, delay])`
 
-## Stopping The Bot
-
-### `ox.stop()`
-
-Requests a graceful stop of the selected bot's event loop. The current handler continues until it returns, so place `return` after `ox.stop()` when no later statements should run:
+Deletes multiple messages in a chat.
 
 ```lua
-ox.on_message({ incoming = true, commands = "stop" }, function(event)
-    ox.send_message(event.chat_id, "Bot stopped", 0)
-    ox.stop()
-    return
+ox.delete_messages(event.chat_id, { 101, 102, 103 })
+```
+
+#### `ox.send_reaction(chat_id, message_id, emoji[, delay])` / `ox.react`
+
+Sends an emoji reaction to a message.
+
+```lua
+ox.send_reaction(event.chat_id, event.message_id, "👍")
+ox.react(event.chat_id, event.message_id, "🔥", 0.5)
+```
+
+#### `ox.pin_message(chat_id, message_id[, delay])`
+
+Pins a message in the specified chat.
+
+```lua
+ox.pin_message(event.chat_id, event.message_id)
+```
+
+#### `ox.forward_message(to_chat_id, from_chat_id, message_id[, delay])`
+
+Forwards a message from one dialog to another.
+
+```lua
+ox.forward_message(dest_chat_id, event.chat_id, event.message_id)
+```
+
+---
+
+### Media Operations
+
+#### `ox.send_image(chat_id, path[, caption[, options]])`
+
+Uploads and sends a local photo.
+
+```lua
+ox.send_image(event.chat_id, "data/banner.png", "Look at this!", { parse_mode = "markdown" })
+```
+
+#### `ox.send_document(chat_id, path[, caption[, options]])`
+
+Uploads and sends an uncompressed file or document.
+
+```lua
+ox.send_document(event.chat_id, "data/report.pdf", "Monthly report")
+```
+
+#### `ox.send_audio(chat_id, path[, caption[, options]])`
+
+Uploads and sends an audio track.
+
+```lua
+ox.send_audio(event.chat_id, "data/soundtrack.mp3", "Theme song")
+```
+
+#### `ox.send_voice(chat_id, path[, delay])`
+
+Uploads an `.ogg` file and sends it as a Telegram voice note.
+
+```lua
+ox.send_voice(event.chat_id, "data/voice.ogg", 0.5)
+```
+
+---
+
+### Interactive Buttons & Clicks
+
+#### `ox.click_button(chat_id, message_id, query_or_index[, delay])`
+
+Simulates clicking a button on a message from another bot.
+- `query_or_index`: button text query (string) or 1-based flat index (integer).
+- Automatically executes the MTProto `messages.GetBotCallbackAnswer` RPC for inline callback buttons.
+
+```lua
+ox.click_button(event.chat_id, event.message_id, "Verify")
+ox.click_button(event.chat_id, event.message_id, 1) -- clicks first button
+```
+
+---
+
+### Timers & Background Execution
+
+Timers run non-blockingly via the runner queue without freezing message processing.
+
+#### `ox.set_interval(seconds, callback) -> integer`
+
+Schedules a recurring background callback every `seconds`. Returns a timer ID.
+
+```lua
+local timer_id = ox.set_interval(30.0, function()
+    ox.log.info("30-second heartbeat check")
 end)
 ```
 
-`ox.stop()` stops message processing and returns control to OxideGram. It does not terminate the process abruptly. Calling it more than once is safe. Pressing Ctrl+C provides the same graceful event-loop termination from the terminal.
+#### `ox.set_timeout(seconds, callback) -> integer`
 
-## Script Configuration Input
-
-### `ox.input(prompt[, default])`
-
-Shows a styled text prompt while the selected script is loading and returns the entered string. This is intended for startup configuration, before handlers begin receiving updates.
+Schedules a one-shot background callback after `seconds`.
 
 ```lua
-local greeting = ox.input("Greeting text", "Hello")
-local image_path = ox.input("Path to an image")
+ox.set_timeout(5.0, function()
+    ox.send_message(my_chat, "Delayed reminder!")
+end)
 ```
 
-`default` is optional and is submitted when the user presses Enter without typing a value. Canceling the prompt prevents the script from starting. Do not call `ox.input` from message handlers: synchronous terminal input would block event processing.
+#### `ox.clear_timer(timer_id) -> boolean`
 
-## Event Table
+Cancels an active interval or timeout.
 
-Each message callback receives one `event` table.
+```lua
+ox.clear_timer(timer_id)
+```
+
+#### `ox.sleep(seconds)`
+
+Asynchronously pauses the current handler without blocking the background update receiver.
+
+```lua
+ox.sleep(2.0)
+```
+
+---
+
+### Humanization & Anti-Ban
+
+#### `ox.send_typing(chat_id)`
+
+Sends a Telegram typing action status to the chat, making bot behavior appear human.
+
+```lua
+ox.send_typing(event.chat_id)
+ox.sleep(1.2)
+event.reply("Finished typing response!")
+```
+
+---
+
+### Built-in Logging
+
+Writes structured log messages to the OxideGram `tracing` system and rotable log files (`data/logs/`):
+
+- `ox.log.info(message)`
+- `ox.log.warn(message)`
+- `ox.log.error(message)`
+- `ox.log.debug(message)`
+
+```lua
+ox.log.info("Bot loaded successfully")
+ox.log.warn("Rate limit approached")
+```
+
+---
+
+### Process Control & Configuration
+
+#### `ox.stop()`
+
+Gracefully shuts down the bot's event loop and update stream.
+
+#### `ox.input(prompt[, default]) -> string`
+
+Displays an interactive styled prompt in the terminal during startup configuration.
+
+---
+
+## The `event` Object
+
+Every message callback receives an enriched `event` table with metadata and context-bound helper methods.
+
+### Properties
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `event.text` | string | Message text. Empty when the update has no textual content. |
-| `event.chat_id` | integer | Bare numeric ID of the dialog where the message appeared. |
-| `event.sender_id` | integer | Bare sender ID. It is `0` when Telegram does not provide a resolvable sender. |
-| `event.incoming` | boolean | `true` for messages not sent by the authorized account. |
-| `event.outgoing` | boolean | `true` for messages sent by the authorized account. |
-| `event.is_private` | boolean | The dialog peer is a user. |
-| `event.is_group` | boolean | The dialog peer is a basic Telegram group. |
-| `event.is_channel` | boolean | The dialog peer is a channel or supergroup. |
-| `event.reply` | function | Sends text to `event.chat_id`; see the caveat below. |
+| `event.text` | string | Message text content (or empty string). |
+| `event.id` / `event.message_id` | integer | Numeric identifier of the message. |
+| `event.chat_id` | integer | Numeric peer ID of the chat/dialog. |
+| `event.sender_id` | integer | Numeric peer ID of the sender (`0` if anonymous). |
+| `event.incoming` | boolean | `true` if received from someone else. |
+| `event.outgoing` | boolean | `true` if sent from your userbot account. |
+| `event.is_private` | boolean | `true` in 1-on-1 private chats. |
+| `event.is_group` | boolean | `true` in basic group chats. |
+| `event.is_channel` | boolean | `true` in channels and supergroups. |
+| `event.matches` | table | 1-based array of positional regex capture groups (`matches[1]`, `matches[2]`). |
+| `event.captures` | table | Key-value map of named regex captures (`captures.name`). |
+| `event.buttons` | table | 2D array of parsed keyboard rows with button objects. |
 
-### Reply Helper Caveat
+### Button Object in `event.buttons`
 
-The event helper is bound as `event.reply(text[, delay_sec])`, not as a Lua method that accepts an implicit `self`. Use dot syntax:
+Each element in `event.buttons[row][col]` contains:
+- `btn.text`: button title.
+- `btn.type`: `"callback"`, `"url"`, `"text"`, or `"other"`.
+- `btn.data`: binary callback payload (string).
+- `btn.url`: destination web link (for URL buttons).
+
+### Context Methods on `event`
+
+#### `event.reply(text[, options])`
+
+Replies directly to the received message with a quote (`reply_to`).
 
 ```lua
-event.reply("Hello", 0)
+event.reply("Roger that!", { parse_mode = "markdown", delay = 0.5 })
 ```
 
-Do not use colon syntax:
+#### `event.edit(new_text[, options])`
+
+Edits the received message.
 
 ```lua
--- Incorrect with the current API: event is passed as an extra argument.
-event:reply("Hello", 0)
+event.edit("New content")
 ```
 
-For the clearest and most portable scripts, use:
+#### `event.delete([delay])`
+
+Deletes the received message.
 
 ```lua
-ox.send_message(event.chat_id, "Hello", 0)
+event.delete(1.0)
 ```
 
-## Errors And Concurrency
+#### `event.react(emoji[, delay])`
 
-- A syntax error or registration error prevents the script from starting.
-- A runtime error inside a callback is written to the OxideGram log with the chat and sender IDs.
-- Sending functions are asynchronous from the Rust runtime but are called normally from Lua.
-- Handlers are invoked sequentially for each received message in the current implementation.
-- Long delays or expensive work in one handler can postpone later handlers and updates. Keep handlers short.
+Reacts to the received message.
 
-Logs are available under `data/logs/`. Set `OXIDEGRAM_LOG=debug` before starting OxideGram for verbose diagnostics.
+```lua
+event.react("🎉")
+```
+
+#### `event.pin([delay])`
+
+Pins the received message in the chat.
+
+```lua
+event.pin()
+```
+
+#### `event.click(query_or_index[, delay])` / `event.click_button`
+
+Clicks an inline callback button or simulates pressing a reply keyboard button on this message.
+
+```lua
+-- Find button by text label and click it
+event.click("Confirm")
+
+-- Click by 1-based index (e.g. 1 = first button in keyboard)
+event.click(1)
+```

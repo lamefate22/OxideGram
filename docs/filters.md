@@ -116,19 +116,31 @@ Command names may be written with or without the leading `/`. Matching is case-i
 
 All match `commands = "start"`. Text must begin with `/`; plain `start` does not match.
 
-## Regular Expressions
+## Regular Expressions and Capture Groups
 
-`pattern` uses the Rust [`regex`](https://docs.rs/regex/latest/regex/) syntax and searches anywhere in the message by default:
+`pattern` uses Rust [`regex`](https://docs.rs/regex/latest/regex/) syntax and searches the message text:
 
 ```lua
 { pattern = "hello" }
 { pattern = "(?i)^hello[!.]?$" }
-{ pattern = "^/item\\s+[0-9]+$" }
+{ pattern = "^/item\\s+(?<id>[0-9]+)$" }
 ```
 
-Remember that Lua string escaping is applied before the regular expression is parsed, so a regex backslash usually appears as `\\` in a quoted Lua string.
+### Accessing Captured Groups
 
-Patterns are compiled once while loading the script. An invalid expression aborts loading instead of silently falling back to substring matching.
+When a pattern matches, captured groups are automatically made available on the `event` object:
+- `event.matches[1]`, `event.matches[2]`: 1-based indexed positional capture groups.
+- `event.captures.name`: named capture groups defined via `(?<name>...)`.
+
+```lua
+ox.on_message({ pattern = "^/ban\\s+(?<username>@\\w+)\\s+(?<reason>.+)$" }, function(event)
+    local target = event.captures.username or event.matches[1]
+    local reason = event.captures.reason or event.matches[2]
+    event.reply(string.format("Banning %s for: %s", target, reason))
+end)
+```
+
+Remember that Lua string escaping is applied before the regular expression is parsed, so a regex backslash usually appears as `\\` in a quoted Lua string. Patterns are compiled once while loading the script. An invalid expression aborts loading with an explicit compilation error.
 
 ## Combined Example
 

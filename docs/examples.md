@@ -7,123 +7,137 @@ title: Script Examples
 
 [Documentation home](index.html) | [API](api.html) | [Filters](filters.html)
 
-Copy-ready versions of these scripts live in the repository's `examples/bots/` directory. Copy a file into `data/bots/`, start OxideGram, and select it from the terminal menu.
+Copy-ready versions of these scripts can be generated directly through OxideGram's interactive menu (`3. Create Bot Script Template`) or placed inside `data/bots/`.
 
-## Echo Incoming Text
+---
+
+## 1. Echo with Markdown Formatting
 
 ```lua
-ox.on_message({ incoming = true, has_text = true }, function(event)
-    ox.send_message(event.chat_id, "You said: " .. event.text, 0)
+ox.on_message({ incoming = true, private = true, has_text = true }, function(event)
+    if not event.text:find("^/") then
+        local reply = string.format("Echo: *%s*", event.text)
+        event.reply(reply, { parse_mode = "markdown", delay = 0.5 })
+    end
 end)
 ```
 
-This is intentionally broad. Add `private = true`, `chats`, or `senders` before using it on a busy account.
+---
 
-## Command Router
+## 2. Interactive Buttons & Auto-Click Simulator
 
-```lua
-ox.on_message({ incoming = true, commands = "start" }, function(event)
-    ox.send_message(event.chat_id, "Welcome. Try /help.", 0)
-end)
-
-ox.on_message({ incoming = true, commands = "help" }, function(event)
-    ox.send_message(event.chat_id, "Available commands: /start, /help", 0)
-end)
-```
-
-## Private Auto-Responder
+Simulates user button clicks in third-party bots (e.g. captchas, verifications, confirmations) via MTProto `GetBotCallbackAnswer`:
 
 ```lua
-ox.on_message({
-    incoming = true,
-    private = true,
-    has_text = true
-}, function(event)
-    ox.send_message(event.chat_id, "I am currently away. I will reply later.", 1)
-end)
-```
+ox.log.info("Buttons simulator started")
 
-Restrict this with `senders` or `chats` while testing to avoid replying to every private dialog.
+ox.on_message({ incoming = true }, function(event)
+    -- Check if message has inline or reply buttons
+    if #event.buttons > 0 then
+        ox.log.info(string.format("Detected %d rows of buttons", #event.buttons))
 
-## Startup Configuration And Photo
+        for row_idx, row in ipairs(event.buttons) do
+            for col_idx, btn in ipairs(row) do
+                ox.log.debug(string.format("Row %d, Col %d: '%s' [%s]", row_idx, col_idx, btn.text, btn.type))
 
-```lua
-local image_path = ox.input("Image path")
-local caption = ox.input("Caption", "Sent by OxideGram")
-
-ox.on_message({ incoming = true, private = true, commands = "photo" }, function(event)
-    ox.send_image(event.chat_id, image_path, caption, 1)
+                -- Automatically click button matching 'Verify' or 'Confirm'
+                if btn.text:lower():find("verify") or btn.text:lower():find("confirm") then
+                    ox.log.info("Clicking button: " .. btn.text)
+                    local answer = event.click(btn.text, 1.0)
+                    ox.log.info("Telegram callback answer: " .. tostring(answer))
+                    return
+                end
+            end
+        end
+    end
 end)
 ```
 
-Input prompts run while the script loads. Keep them outside message handlers.
+---
 
-## Pattern Matcher
+## 3. Self-Editing Animated Message
+
+Demonstrates editing messages and asynchronous pauses:
 
 ```lua
-ox.on_message({
-    incoming = true,
-    has_text = true,
-    pattern = "(?i)\\boxidegram\\b"
-}, function(event)
-    ox.send_message(event.chat_id, "OxideGram was mentioned.", 0)
+ox.on_message({ commands = "countdown", outgoing = true }, function(event)
+    event.edit("Countdown: 3...")
+    ox.sleep(1.0)
+    event.edit("Countdown: 2...")
+    ox.sleep(1.0)
+    event.edit("Countdown: 1...")
+    ox.sleep(1.0)
+    event.edit("🚀 *LIFTOFF!*", { parse_mode = "markdown" })
 end)
 ```
 
-## Shared Callback For Multiple Chat Types
+---
+
+## 4. Regex Named Captures & Typing Status
+
+Demonstrates regex named capture groups and human-like typing simulation:
 
 ```lua
-local function greet(event)
-    ox.send_message(event.chat_id, "Hello!", 0)
-end
+ox.on_message({ pattern = "^/calc\\s+(?<a>\\d+)\\s*(?<op>[+\\-*/])\\s*(?<b>\\d+)$" }, function(event)
+    local a = tonumber(event.captures.a)
+    local b = tonumber(event.captures.b)
+    local op = event.captures.op
 
-ox.on_message({ incoming = true, private = true, commands = "hello" }, greet)
-ox.on_message({ incoming = true, group = true, commands = "hello" }, greet)
-```
+    ox.send_typing(event.chat_id)
+    ox.sleep(0.8)
 
-Registering twice expresses OR between chat types while preserving AND inside each filter table.
+    local res
+    if op == "+" then res = a + b
+    elseif op == "-" then res = a - b
+    elseif op == "*" then res = a * b
+    elseif op == "/" then res = (b ~= 0) and (a / b) or "Cannot divide by zero"
+    end
 
-## Stop On A Message
-
-```lua
-local ADMIN_ID = 123456789
-
-ox.on_message({ senders = ADMIN_ID, incoming = true, commands = "stop" }, function(event)
-    ox.send_message(event.chat_id, "Bot stopped", 0)
-    ox.stop()
-    return
+    event.reply(string.format("Result: `%s`", tostring(res)), { parse_mode = "markdown" })
 end)
 ```
 
-Restrict remote stop handlers by `senders` or `chats`. The current handler finishes before the event loop exits.
+---
 
-## Inspect Event Metadata
+## 5. Periodic Heartbeat Timer & Reactions
+
+Runs background interval timers without blocking message reception:
 
 ```lua
-ox.on_message(function(event)
-    print("text:", event.text)
-    print("chat_id:", event.chat_id)
-    print("sender_id:", event.sender_id)
-    print("incoming:", event.incoming)
-    print("outgoing:", event.outgoing)
-    print("private:", event.is_private)
-    print("group:", event.is_group)
-    print("channel:", event.is_channel)
+-- Ping a log monitor every 60 seconds
+local timer_id = ox.set_interval(60.0, function()
+    ox.log.info("Periodic health check heartbeat")
+end)
+
+-- React with fire emoji to incoming mentions
+ox.on_message({ pattern = "(?i)\\boxidegram\\b", incoming = true }, function(event)
+    event.react("🔥")
+    event.reply("Thanks for mentioning OxideGram!", { delay = 0.5 })
 end)
 ```
 
-This is useful for discovering IDs, but standard Lua output shares the interactive terminal. Remove or restrict the handler after debugging.
+---
 
-## Safer Testing
-
-Start with your own chat or a dedicated test account:
+## 6. Document & Voice Note Uploader
 
 ```lua
-local TEST_CHAT = 123456789
-
-ox.on_message({ chats = TEST_CHAT, incoming = true }, function(event)
-    ox.send_message(event.chat_id, "Test handler received: " .. event.text, 0)
+ox.on_message({ commands = "sendreport", incoming = true }, function(event)
+    ox.send_document(event.chat_id, "data/report.pdf", "Here is your requested report")
+    ox.send_voice(event.chat_id, "data/voice_note.ogg", 1.0)
 end)
 ```
 
-Replace the placeholder with an actual `event.chat_id`. Avoid unrestricted auto-replies until behavior has been verified.
+---
+
+## 7. Hot-Reload Workflow
+
+1. Start OxideGram and select your bot.
+2. Open `data/bots/your_bot.lua` in VS Code or any text editor.
+3. Edit your handlers or add new ones.
+4. Hit **Save** (`Ctrl+S`).
+5. OxideGram instantly logs:
+   ```
+   Script change detected. Initiating hot-reload...
+   Lua script hot-reloaded successfully
+   ```
+6. The bot is immediately running the updated code without restarting or logging into Telegram again!

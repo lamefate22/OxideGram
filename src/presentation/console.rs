@@ -183,6 +183,39 @@ impl BotConsole for OxideConsole {
             .prompt()
             .map_err(|error| format!("Failed to get bot configuration input: {error}"))
     }
+
+    fn ask_select(
+        &self,
+        prompt: &str,
+        choices: Vec<String>,
+        default: Option<&str>,
+    ) -> Result<String, String> {
+        if choices.is_empty() {
+            return Err("No choices available for select.".to_string());
+        }
+
+        let mut select = Select::new(prompt, choices.clone()).with_render_config(render_config());
+
+        if let Some(pos) =
+            default.and_then(|def| choices.iter().position(|c| c.eq_ignore_ascii_case(def)))
+        {
+            select = select.with_starting_cursor(pos);
+        }
+
+        select
+            .prompt()
+            .map_err(|e| format!("Failed to make selection: {e}"))
+    }
+
+    fn ask_confirm(&self, prompt: &str, default: Option<bool>) -> Result<bool, String> {
+        let mut confirm = Confirm::new(prompt).with_render_config(render_config());
+        if let Some(def) = default {
+            confirm = confirm.with_default(def);
+        }
+        confirm
+            .prompt()
+            .map_err(|e| format!("Failed to get confirmation: {e}"))
+    }
 }
 
 #[cfg(test)]

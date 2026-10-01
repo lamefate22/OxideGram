@@ -198,14 +198,161 @@ impl BotSimulator {
         ox.set("send_reaction", react_fn)
             .map_err(ScriptError::LuaError)?;
 
+        // Helper to parse select options from a Lua table
+        fn parse_select_options(val: &Value) -> Result<(Vec<String>, Vec<String>), mlua::Error> {
+            let t = match val {
+                Value::Table(t) => t,
+                _ => return Err(mlua::Error::RuntimeError("Options must be a table".into())),
+            };
+
+            let mut labels = Vec::new();
+            let mut values = Vec::new();
+
+            for pair in t.sequence_values::<Value>() {
+                let item = pair.map_err(|e| {
+                    mlua::Error::RuntimeError(format!("Invalid select option: {e}"))
+                })?;
+                match item {
+                    Value::String(s) => {
+                        let s_str = s
+                            .to_str()
+                            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?
+                            .to_string();
+                        labels.push(s_str.clone());
+                        values.push(s_str);
+                    }
+                    Value::Table(item_table) => {
+                        let label: String = item_table
+                            .get("label")
+                            .or_else(|_| item_table.get("name"))
+                            .or_else(|_| item_table.get("text"))
+                            .map_err(|_| {
+                                mlua::Error::RuntimeError(
+                                    "Select option table must have 'label' or 'name'".into(),
+                                )
+                            })?;
+                        let val: String = item_table.get("value").unwrap_or_else(|_| label.clone());
+                        labels.push(label);
+                        values.push(val);
+                    }
+                    other => {
+                        let s = other
+                            .to_string()
+                            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+                        labels.push(s.clone());
+                        values.push(s);
+                    }
+                }
+            }
+
+            if labels.is_empty() {
+                return Err(mlua::Error::RuntimeError(
+                    "Select options array cannot be empty".into(),
+                ));
+            }
+
+            Ok((labels, values))
+        }
+
+        // ox.select
+        let console_clone = Arc::clone(&self.console);
+        let select_fn = self
+            .lua
+            .create_function(
+                move |_, (prompt, options_val, default): (String, Value, Option<String>)| {
+                    let (labels, values) = parse_select_options(&options_val)?;
+
+                    let default_label = default.as_ref().and_then(|def| {
+                        values
+                            .iter()
+                            .position(|v| v.eq_ignore_ascii_case(def))
+                            .or_else(|| labels.iter().position(|l| l.eq_ignore_ascii_case(def)))
+                            .map(|idx| labels[idx].clone())
+                    });
+
+                    let selected_label = console_clone
+                        .ask_select(&prompt, labels.clone(), default_label.as_deref())
+                        .map_err(mlua::Error::RuntimeError)?;
+
+                    let idx = labels
+                        .iter()
+                        .position(|l| l == &selected_label)
+                        .unwrap_or(0);
+                    Ok(values[idx].clone())
+                },
+            )
+            .map_err(ScriptError::LuaError)?;
+        ox.set("select", select_fn).map_err(ScriptError::LuaError)?;
+
+        // ox.confirm
+        let console_clone = Arc::clone(&self.console);
+        let confirm_fn = self
+            .lua
+            .create_function(move |_, (prompt, default): (String, Option<bool>)| {
+                console_clone
+                    .ask_confirm(&prompt, default)
+                    .map_err(mlua::Error::RuntimeError)
+            })
+            .map_err(ScriptError::LuaError)?;
+        ox.set("confirm", confirm_fn)
+            .map_err(ScriptError::LuaError)?;
+
         // ox.input
         let console_clone = Arc::clone(&self.console);
         let input_fn = self
             .lua
-            .create_function(move |_, (prompt, default): (String, Option<String>)| {
-                console_clone
-                    .ask_input(&prompt, default.as_deref())
-                    .map_err(mlua::Error::RuntimeError)
+            .create_function(move |_, (prompt, second_arg): (String, Option<Value>)| {
+                match second_arg {
+                    Some(Value::String(s)) => {
+                        let s_str = s
+                            .to_str()
+                            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+                        console_clone
+                            .ask_input(&prompt, Some(&s_str))
+                            .map_err(mlua::Error::RuntimeError)
+                    }
+                    Some(Value::Table(cfg)) => {
+                        if let Ok(options_val) = cfg.get::<Value>("options") {
+                            let (labels, values) = parse_select_options(&options_val)?;
+                            let default: Option<String> = cfg.get("default").ok();
+                            let default_label = default.as_ref().and_then(|def| {
+                                values
+                                    .iter()
+                                    .position(|v| v.eq_ignore_ascii_case(def))
+                                    .or_else(|| {
+                                        labels.iter().position(|l| l.eq_ignore_ascii_case(def))
+                                    })
+                                    .map(|idx| labels[idx].clone())
+                            });
+
+                            let selected_label = console_clone
+                                .ask_select(&prompt, labels.clone(), default_label.as_deref())
+                                .map_err(mlua::Error::RuntimeError)?;
+
+                            let idx = labels
+                                .iter()
+                                .position(|l| l == &selected_label)
+                                .unwrap_or(0);
+                            Ok(values[idx].clone())
+                        } else {
+                            let default: Option<String> = cfg.get("default").ok();
+                            console_clone
+                                .ask_input(&prompt, default.as_deref())
+                                .map_err(mlua::Error::RuntimeError)
+                        }
+                    }
+                    None => console_clone
+                        .ask_input(&prompt, None)
+                        .map_err(mlua::Error::RuntimeError),
+                    Some(other) => {
+                        let s = other
+                            .to_string()
+                            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+                        console_clone
+                            .ask_input(&prompt, Some(&s))
+                            .map_err(mlua::Error::RuntimeError)
+                    }
+                }
             })
             .map_err(ScriptError::LuaError)?;
         ox.set("input", input_fn).map_err(ScriptError::LuaError)?;
@@ -237,10 +384,15 @@ impl BotSimulator {
         let handlers_store = Arc::clone(&self.handlers);
         let on_msg_fn = self
             .lua
-            .create_function(move |lua, (filter_val, callback): (Value, Function)| {
-                let filter = match filter_val {
-                    Value::Table(t) => Some(parse_message_filter(&t)?),
-                    _ => None,
+            .create_function(move |lua, (arg1, arg2): (Value, Option<Function>)| {
+                let (filter, callback) = match (arg1, arg2) {
+                    (Value::Table(t), Some(f)) => (Some(parse_message_filter(&t)?), f),
+                    (Value::Function(f), _) => (None, f),
+                    _ => {
+                        return Err(mlua::Error::RuntimeError(
+                            "Invalid arguments for ox.on_message".into(),
+                        ));
+                    }
                 };
                 let key = lua.create_registry_value(callback)?;
                 if let Ok(mut list) = handlers_store.try_lock() {
@@ -583,5 +735,77 @@ impl BotSimulator {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockConsole;
+    impl BotConsole for MockConsole {
+        fn ask_input(&self, _prompt: &str, default: Option<&str>) -> Result<String, String> {
+            Ok(default.unwrap_or("default_val").to_string())
+        }
+
+        fn ask_select(
+            &self,
+            _prompt: &str,
+            choices: Vec<String>,
+            default: Option<&str>,
+        ) -> Result<String, String> {
+            Ok(default.unwrap_or(&choices[0]).to_string())
+        }
+
+        fn ask_confirm(&self, _prompt: &str, default: Option<bool>) -> Result<bool, String> {
+            Ok(default.unwrap_or(true))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_simulator_ox_select_and_confirm() {
+        let temp_dir = std::env::temp_dir();
+        let script_path = temp_dir.join("test_sim_select.lua");
+        std::fs::write(&script_path, "ox.on_message(function(e) end)").unwrap();
+
+        let console = Arc::new(MockConsole);
+        let mut sim = BotSimulator::new(&script_path, console).await.unwrap();
+        sim.load_script().await.unwrap();
+
+        // 1. ox.select with string array
+        let res: String = sim
+            .lua
+            .load(r#"return ox.select("Mode?", { "text", "grades" }, "grades")"#)
+            .eval()
+            .unwrap();
+        assert_eq!(res, "grades");
+
+        // 2. ox.select with table items { label, value }
+        let res: String = sim
+            .lua
+            .load(
+                r#"return ox.select("Mode?", { { label = "Text Msg", value = "txt" }, { label = "Grade Spam", value = "grd" } }, "txt")"#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(res, "txt");
+
+        // 3. ox.confirm
+        let res: bool = sim
+            .lua
+            .load(r#"return ox.confirm("Delete?", false)"#)
+            .eval()
+            .unwrap();
+        assert!(!res);
+
+        // 4. ox.input with options table
+        let res: String = sim
+            .lua
+            .load(
+                r#"return ox.input("Mode?", { options = { "text", "grades" }, default = "text" })"#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(res, "text");
     }
 }

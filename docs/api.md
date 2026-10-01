@@ -321,15 +321,52 @@ dialog:step("rate", {
 
 ---
 
-### Process Control & Configuration
+### Interactive Prompts & Configuration
+
+#### `ox.select(prompt, options[, default]) -> string`
+
+Displays an interactive TUI choice menu navigable via arrow keys, fuzzy typing, and Enter:
+
+```lua
+-- Simple array of allowed values
+local mode = ox.select("Desired spam mode?", { "text", "grades" }, "text")
+
+-- Detailed choices with human-readable labels
+local mode = ox.select("Choose mode:", {
+    { label = "Text message spam", value = "text" },
+    { label = "Star / Reaction grades", value = "grades" },
+}, "text")
+```
+
+#### `ox.confirm(prompt[, default]) -> boolean`
+
+Prompts the user for a boolean yes/no confirmation:
+
+```lua
+local delete_sent = ox.confirm("Delete messages after sending?", true)
+```
+
+#### `ox.input(prompt[, default_or_config]) -> string`
+
+Displays an interactive text prompt during startup configuration. If passed an options table, functions as an interactive select:
+
+```lua
+local api_key = ox.input("Enter target chat or username:", "@my_channel")
+
+-- Config table format
+local mode = ox.input("Select mode:", {
+    options = { "text", "grades" },
+    default = "text"
+})
+```
+
+---
+
+### Process Control
 
 #### `ox.stop()`
 
 Gracefully shuts down the bot's event loop and update stream.
-
-#### `ox.input(prompt[, default]) -> string`
-
-Displays an interactive styled prompt in the terminal during startup configuration.
 
 ---
 

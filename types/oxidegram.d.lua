@@ -393,11 +393,48 @@ function ox.sleep_random(min, max) end
 ---@return T
 function ox.choice(list) end
 
---- Prompts the user in the terminal during startup configuration.
+--- Single select option item with optional display label and underlying value.
+---@class SelectOptionItem
+---@field label string Display label shown in the terminal menu.
+---@field value? string Value returned when chosen (defaults to label).
+
+--- Input configuration table.
+---@class InputConfig
+---@field default? string Default fallback value.
+---@field options? (string | SelectOptionItem)[] List of allowed options to pick from.
+
+--- Prompts the user with an interactive terminal selection menu (via arrow keys or search).
+---
+--- Supports simple string arrays `{ "text", "grades" }` or detailed `{ { label = "Text", value = "text" } }`.
+---
+--- Example:
+--- ```lua
+--- local mode = ox.select("Desired spam mode?", { "text", "grades" }, "text")
+--- ```
 ---@param prompt string Prompt label shown to the user.
----@param default? string Default value returned on empty input.
----@return string User entered string.
-function ox.input(prompt, default) end
+---@param options (string | SelectOptionItem)[] Array of options or label/value tables.
+---@param default? string Default selected option.
+---@return string The chosen option value.
+function ox.select(prompt, options, default) end
+
+--- Prompts the user for a boolean yes/no confirmation.
+---
+--- Example:
+--- ```lua
+--- local delete_sent = ox.confirm("Delete sent messages?", true)
+--- ```
+---@param prompt string Question or prompt text.
+---@param default? boolean Default boolean answer when pressing Enter.
+---@return boolean
+function ox.confirm(prompt, default) end
+
+--- Prompts the user in the terminal during startup configuration.
+---
+--- If `options` table is provided, acts as an interactive select menu.
+---@param prompt string Prompt label shown to the user.
+---@param default_or_config? string | InputConfig Default value string or configuration table.
+---@return string User entered or selected string.
+function ox.input(prompt, default_or_config) end
 
 --- Creates or retrieves a named Dialog Flow state machine.
 ---@param name string Unique name of the flow.

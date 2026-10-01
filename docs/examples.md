@@ -202,3 +202,34 @@ dialog:on_match("стоп", function(event)
 end)
 ```
 
+---
+
+## 5. Startup Configuration with Interactive Menus
+
+Configure bot options effortlessly before connecting to Telegram using `ox.select`, `ox.confirm`, and `ox.input`:
+
+```lua
+-- 1. Interactive choice menu with arrow keys and fuzzy search
+local mode = ox.select("Select spam mode:", { "text", "grades" }, "text")
+
+-- 2. Boolean yes/no confirmation prompt
+local auto_delete = ox.confirm("Delete responses after sending?", true)
+
+-- 3. String text input
+local target_chat = ox.input("Target chat ID or username:", "@my_channel")
+
+ox.log.info(string.format("Bot ready: mode=%s, auto_delete=%s, target=%s", mode, tostring(auto_delete), target_chat))
+
+ox.on_message({ incoming = true, chats = target_chat }, function(event)
+    if mode == "grades" then
+        event.react("🔥", 1.0)
+    else
+        event.reply("Hello from automated userbot!", 0.5)
+    end
+
+    if auto_delete then
+        event.delete(5.0)
+    end
+end)
+```
+

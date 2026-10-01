@@ -117,6 +117,7 @@ OxideGram uses a dual-layer logging system powered by `tracing` and `tracing-app
 - **Dialog Flow FSM Engine**: Create declarative multi-step dialogs (`ox.flow`) with automatic step timeouts, triggers, and state transitions.
 - **Persistent Storage**: Save key-value data between bot restarts effortlessly with `ox.storage`.
 - **String Helpers & Stdlib**: Built-in string methods (`str:contains`, `str:starts_with`, `str:split`, `str:trim`) and humanized delays (`ox.sleep_random`, `ox.choice`).
+- **Interactive TUI Prompts**: Ask startup configuration questions effortlessly with choice menus (`ox.select`), yes/no confirmations (`ox.confirm`), and text prompts (`ox.input`).
 - **Inline & Reply Keyboard Button Clicking**: Full support for Telegram Inline and Reply keyboards (`event.buttons`), with programmatic click simulation (`event.click("Verify")` or `event.click(1)`).
 - **Rich Message Control**: Edit messages (`event.edit`), delete (`event.delete`), send emoji reactions (`event.react`), pin (`event.pin`), and forward (`ox.forward_message`).
 - **Media & Formatting**: Send photos, documents (`ox.send_document`), audio tracks (`ox.send_audio`), and voice messages (`ox.send_voice`) with Markdown and HTML entity support.
@@ -141,7 +142,7 @@ When opening the repository in **Zed** (via `.zed/settings.json`), **Visual Stud
 
 1. OxideGram scans `data/bots/` for `.lua` script files.
 2. The selected script is evaluated in an isolated embedded Lua 5.4 runtime.
-3. Startup prompts (`ox.input`) configure variables before the event loop starts.
+3. Startup prompts (`ox.select`, `ox.confirm`, `ox.input`) configure variables before the event loop starts.
 4. Telegram updates are received non-blockingly over a background connection.
 5. Matching messages are dispatched to registered handlers along with enriched event helpers.
 6. When editing `.lua` files on disk, the filesystem watcher triggers an automatic reload without disconnecting from Telegram.

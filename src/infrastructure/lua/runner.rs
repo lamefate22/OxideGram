@@ -8,7 +8,9 @@ use crate::infrastructure::lua::api::{
     RegisteredHandler, TimerHub, apply_optional_delay, build_input_message, invoke_send_message,
     invoke_with_flood_wait, parse_message_options, register_ox_table, resolve_peer_ref,
 };
-use crate::infrastructure::lua::buttons::{markup_to_lua_table, parse_reply_markup};
+use crate::infrastructure::lua::buttons::{
+    ReplyMarkupAction, markup_to_lua_table, parse_reply_markup_action,
+};
 use crate::infrastructure::{IO_TIMEOUT, NETWORK_TIMEOUT};
 use grammers_client::Client;
 use grammers_client::message::InputMessage;
@@ -31,6 +33,7 @@ pub struct LuaBotRunner {
     pub updates: Option<mpsc::Receiver<UpdatesLike>>,
     pub lua: Lua,
     pub message_handlers: Arc<Mutex<Vec<RegisteredHandler>>>,
+    pub chat_markups: Arc<RwLock<HashMap<i64, MessageMarkup>>>,
     peer_refs: Arc<RwLock<HashMap<i64, PeerRef>>>,
     console: Arc<dyn BotConsole>,
     stop_tx: watch::Sender<bool>,
@@ -50,6 +53,7 @@ impl LuaBotRunner {
         let lua = Lua::new();
         let message_handlers = Arc::new(Mutex::new(Vec::new()));
         let peer_refs = Arc::new(RwLock::new(HashMap::new()));
+        let chat_markups = Arc::new(RwLock::new(HashMap::new()));
         let (stop_tx, stop_rx) = watch::channel(false);
         let (timer_tx, timer_rx) = mpsc::channel(100);
         let timer_hub = Arc::new(TimerHub::new(timer_tx));
@@ -59,6 +63,7 @@ impl LuaBotRunner {
             updates: Some(updates),
             lua,
             message_handlers,
+            chat_markups,
             peer_refs,
             console,
             stop_tx,
@@ -358,7 +363,35 @@ impl LuaBotRunner {
             chat_type,
         };
 
-        let markup = parse_reply_markup(message.reply_markup().as_ref());
+        let markup_action = parse_reply_markup_action(message.reply_markup().as_ref());
+        let effective_markup = match markup_action {
+            ReplyMarkupAction::Inline(inline_markup) => {
+                let cached_opt = self.chat_markups.read().await.get(&chat_id).cloned();
+                if let Some(cached) = cached_opt {
+                    inline_markup.merge(&cached)
+                } else {
+                    inline_markup
+                }
+            }
+            ReplyMarkupAction::ReplyKeyboard(reply_markup) => {
+                self.chat_markups
+                    .write()
+                    .await
+                    .insert(chat_id, reply_markup.clone());
+                reply_markup
+            }
+            ReplyMarkupAction::HideKeyboard => {
+                self.chat_markups.write().await.remove(&chat_id);
+                MessageMarkup::default()
+            }
+            ReplyMarkupAction::None => self
+                .chat_markups
+                .read()
+                .await
+                .get(&chat_id)
+                .cloned()
+                .unwrap_or_default(),
+        };
 
         for item in handlers.iter() {
             let match_result = if let Some(ref filter) = item.filter {
@@ -382,7 +415,7 @@ impl LuaBotRunner {
                 outgoing,
                 chat_type,
                 peer_ref,
-                &markup,
+                &effective_markup,
                 &match_result,
             )?;
 
@@ -613,9 +646,9 @@ impl LuaBotRunner {
                 let markup = markup_click.clone();
                 async move {
                     apply_optional_delay(delay).await;
-                    let btn = match query_val {
-                        Value::Integer(i) if i >= 1 => markup.flat_button_at((i - 1) as usize),
-                        Value::Number(n) if n >= 1.0 => markup.flat_button_at((n as usize) - 1),
+                    let btn = match &query_val {
+                        Value::Integer(i) if *i >= 1 => markup.flat_button_at((*i - 1) as usize),
+                        Value::Number(n) if *n >= 1.0 => markup.flat_button_at((*n as usize) - 1),
                         Value::String(s) => {
                             let query_str = s
                                 .to_str()
@@ -629,37 +662,53 @@ impl LuaBotRunner {
                         }
                     };
 
-                    let Some(button) = btn else {
-                        return Err(mlua::Error::RuntimeError(
-                            "Button not found on message".into(),
-                        ));
-                    };
-
-                    match &button.kind {
-                        crate::domain::automation::ButtonKind::Callback(data) => {
-                            use grammers_tl_types as tl;
-                            let input_peer = tl::enums::InputPeer::from(&peer_ref);
-                            let req = tl::functions::messages::GetBotCallbackAnswer {
-                                peer: input_peer,
-                                msg_id: message_id,
-                                data: Some(data.clone()),
-                                game: false,
-                                password: None,
-                            };
-                            let res = invoke_with_flood_wait(&client, &req).await?;
-                            match res {
-                                tl::enums::messages::BotCallbackAnswer::Answer(ans) => {
-                                    Ok(ans.message.unwrap_or_default())
+                    if let Some(button) = btn {
+                        match &button.kind {
+                            crate::domain::automation::ButtonKind::Callback(data) => {
+                                use grammers_tl_types as tl;
+                                let input_peer = tl::enums::InputPeer::from(&peer_ref);
+                                let req = tl::functions::messages::GetBotCallbackAnswer {
+                                    peer: input_peer,
+                                    msg_id: message_id,
+                                    data: Some(data.clone()),
+                                    game: false,
+                                    password: None,
+                                };
+                                let res = invoke_with_flood_wait(&client, &req).await?;
+                                match res {
+                                    tl::enums::messages::BotCallbackAnswer::Answer(ans) => {
+                                        Ok(ans.message.unwrap_or_default())
+                                    }
                                 }
                             }
+                            crate::domain::automation::ButtonKind::Url(url) => Ok(url.clone()),
+                            crate::domain::automation::ButtonKind::Text => {
+                                let input_msg = InputMessage::new().text(button.text.clone());
+                                invoke_send_message(&client, peer_ref, input_msg).await?;
+                                Ok(button.text.clone())
+                            }
+                            _ => Ok(String::new()),
                         }
-                        crate::domain::automation::ButtonKind::Url(url) => Ok(url.clone()),
-                        crate::domain::automation::ButtonKind::Text => {
-                            let input_msg = InputMessage::new().text(button.text.clone());
-                            invoke_send_message(&client, peer_ref, input_msg).await?;
-                            Ok(button.text.clone())
-                        }
-                        _ => Ok(String::new()),
+                    } else if let Value::String(s) = query_val {
+                        // In Telegram, clicking a regular reply button simply sends its text as a message.
+                        // If the button wasn't explicitly found in the parsed keyboard (e.g. sent in earlier message),
+                        // send the requested text directly as a resilient fallback.
+                        let text = s
+                            .to_str()
+                            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?
+                            .to_string();
+                        warn!(
+                            chat_id,
+                            query = %text,
+                            "Button not found in active markup; falling back to sending text message"
+                        );
+                        let input_msg = InputMessage::new().text(text.clone());
+                        invoke_send_message(&client, peer_ref, input_msg).await?;
+                        Ok(text)
+                    } else {
+                        Err(mlua::Error::RuntimeError(
+                            "Button not found on message".into(),
+                        ))
                     }
                 }
             })

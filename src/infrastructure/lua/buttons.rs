@@ -46,7 +46,39 @@ pub fn parse_reply_markup(markup: Option<&tl::enums::ReplyMarkup>) -> MessageMar
                 is_inline: false,
             }
         }
+        tl::enums::ReplyMarkup::ReplyKeyboardHide(_) => MessageMarkup::default(),
         _ => MessageMarkup::default(),
+    }
+}
+
+/// Action to perform on chat active keyboard based on received `ReplyMarkup`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplyMarkupAction {
+    /// Message contains an inline keyboard.
+    Inline(MessageMarkup),
+    /// Message sets or updates the persistent reply keyboard for the chat.
+    ReplyKeyboard(MessageMarkup),
+    /// Message explicitly removes/hides the reply keyboard for the chat.
+    HideKeyboard,
+    /// Message has no keyboard markup.
+    None,
+}
+
+/// Parses Telegram MTProto `ReplyMarkup` into a `ReplyMarkupAction` to maintain chat keyboard state.
+pub fn parse_reply_markup_action(markup: Option<&tl::enums::ReplyMarkup>) -> ReplyMarkupAction {
+    let Some(markup) = markup else {
+        return ReplyMarkupAction::None;
+    };
+
+    match markup {
+        tl::enums::ReplyMarkup::ReplyInlineMarkup(_) => {
+            ReplyMarkupAction::Inline(parse_reply_markup(Some(markup)))
+        }
+        tl::enums::ReplyMarkup::ReplyKeyboardMarkup(_) => {
+            ReplyMarkupAction::ReplyKeyboard(parse_reply_markup(Some(markup)))
+        }
+        tl::enums::ReplyMarkup::ReplyKeyboardHide(_) => ReplyMarkupAction::HideKeyboard,
+        _ => ReplyMarkupAction::None,
     }
 }
 

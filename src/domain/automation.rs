@@ -69,12 +69,43 @@ pub struct MessageMarkup {
     pub is_inline: bool,
 }
 
+/// Normalizes button or query text by stripping whitespace, emoji variation selectors (\u{fe0f}),
+/// and converting to Unicode lowercase for robust comparison.
+pub fn normalize_button_text(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_whitespace() && *c != '\u{fe0f}')
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
 impl MessageMarkup {
-    /// Searches for a button matching text (case-insensitive) or raw callback_data string.
+    /// Checks whether the markup has no buttons across all rows.
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.rows.iter().all(|r| r.buttons.is_empty())
+    }
+
+    /// Merges buttons from another markup into this markup.
+    pub fn merge(&self, other: &MessageMarkup) -> MessageMarkup {
+        let mut rows = self.rows.clone();
+        rows.extend(other.rows.clone());
+        MessageMarkup {
+            rows,
+            is_inline: self.is_inline || other.is_inline,
+        }
+    }
+
+    /// Searches for a button matching text (exact, normalized, or substring) or raw callback_data string.
     pub fn find_button(&self, query: &str) -> Option<(usize, usize, &BotButton)> {
+        let trimmed_query = query.trim();
+        if trimmed_query.is_empty() {
+            return None;
+        }
+
+        // 1. Exact text or callback data match
         for (r_idx, row) in self.rows.iter().enumerate() {
             for (c_idx, btn) in row.buttons.iter().enumerate() {
-                if btn.text.eq_ignore_ascii_case(query) {
+                if btn.text == query {
                     return Some((r_idx, c_idx, btn));
                 }
                 if let Some(data) = btn.callback_data()
@@ -85,6 +116,41 @@ impl MessageMarkup {
                 }
             }
         }
+
+        // 2. Unicode case-insensitive exact match
+        let query_lower = query.to_lowercase();
+        for (r_idx, row) in self.rows.iter().enumerate() {
+            for (c_idx, btn) in row.buttons.iter().enumerate() {
+                if btn.text.to_lowercase() == query_lower {
+                    return Some((r_idx, c_idx, btn));
+                }
+            }
+        }
+
+        // 3. Normalized match (ignores whitespace, emoji variation selectors, unicode case)
+        let norm_query = normalize_button_text(query);
+        if !norm_query.is_empty() {
+            for (r_idx, row) in self.rows.iter().enumerate() {
+                for (c_idx, btn) in row.buttons.iter().enumerate() {
+                    if normalize_button_text(&btn.text) == norm_query {
+                        return Some((r_idx, c_idx, btn));
+                    }
+                }
+            }
+        }
+
+        // 4. Substring / partial match on normalized text
+        if norm_query.chars().count() >= 2 {
+            for (r_idx, row) in self.rows.iter().enumerate() {
+                for (c_idx, btn) in row.buttons.iter().enumerate() {
+                    let norm_btn = normalize_button_text(&btn.text);
+                    if norm_btn.contains(&norm_query) || norm_query.contains(&norm_btn) {
+                        return Some((r_idx, c_idx, btn));
+                    }
+                }
+            }
+        }
+
         None
     }
 
@@ -218,7 +284,7 @@ impl MessageFilter {
 
 #[cfg(test)]
 mod tests {
-    use super::{ChatType, MessageContext, MessageFilter};
+    use super::*;
     use crate::domain::types::{ChatId, SenderId};
 
     #[test]
@@ -306,5 +372,41 @@ mod tests {
             result.captures.get("reason").map(|s| s.as_str()),
             Some("spamming messages")
         );
+    }
+
+    #[test]
+    fn find_button_supports_exact_fuzzy_emoji_and_cyrillic() {
+        let markup = MessageMarkup {
+            rows: vec![KeyboardRow {
+                buttons: vec![
+                    BotButton::new("💌 Сообщение", ButtonKind::Text),
+                    BotButton::new("💋 или 👋", ButtonKind::Callback(b"kiss_wave".to_vec())),
+                    BotButton::new("ОТМЕНА", ButtonKind::Text),
+                ],
+            }],
+            is_inline: true,
+        };
+
+        // Exact match
+        assert!(markup.find_button("💌 Сообщение").is_some());
+
+        // Without whitespace
+        assert!(markup.find_button("💌Сообщение").is_some());
+
+        // With variation selector
+        assert!(markup.find_button("💌\u{fe0f}Сообщение").is_some());
+
+        // Substring
+        assert!(markup.find_button("Сообщение").is_some());
+
+        // Cyrillic case-insensitivity
+        assert!(markup.find_button("отмена").is_some());
+
+        // Callback data match
+        let (_, _, cb_btn) = markup.find_button("kiss_wave").unwrap();
+        assert_eq!(cb_btn.text, "💋 или 👋");
+
+        // Non-existent button
+        assert!(markup.find_button("Несуществующая").is_none());
     }
 }

@@ -519,7 +519,18 @@ impl BotSimulator {
         // event.reply
         let reply_fn = self
             .lua
-            .create_function(|_, (reply_text, _): (String, Option<Value>)| {
+            .create_function(|_, (a1, a2): (Value, Option<Value>)| {
+                let reply_text = match (a1, a2) {
+                    (Value::Table(_), Some(Value::String(s))) => s.to_str()?.to_string(),
+                    (Value::Table(_), Some(Value::Integer(i))) => i.to_string(),
+                    (Value::String(s), _) => s.to_str()?.to_string(),
+                    (Value::Integer(i), _) => i.to_string(),
+                    _ => {
+                        return Err(mlua::Error::RuntimeError(
+                            "reply expects text message as first argument".into(),
+                        ));
+                    }
+                };
                 println!("  \x1b[32m[EVENT REPLY]\x1b[0m \"{reply_text}\"");
                 Ok(())
             })
@@ -532,33 +543,69 @@ impl BotSimulator {
         let markup_copy = markup.clone();
         let click_fn = self
             .lua
-            .create_async_function(move |_, (query_val, delay): (Value, Option<f64>)| {
-                let markup = markup_copy.clone();
-                async move {
-                    let d_str = delay.map(|d| format!(" (delay: {d:.1}s)")).unwrap_or_default();
-
-                    let btn = match &query_val {
-                        Value::Integer(i) if *i >= 1 => markup.flat_button_at((*i - 1) as usize),
-                        Value::Number(n) if *n >= 1.0 => markup.flat_button_at((*n as usize) - 1),
-                        Value::String(s) => {
-                            let q = s.to_str().map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
-                            markup.find_button(&q).map(|(_, _, b)| b)
+            .create_async_function(
+                move |_, (a1, a2, a3): (Value, Option<Value>, Option<Value>)| {
+                    let markup = markup_copy.clone();
+                    let (query_val, delay) = match (a1, a2, a3) {
+                        (Value::Table(_), Some(q), d) => {
+                            let d_val = match d {
+                                Some(Value::Number(n)) => Some(n),
+                                Some(Value::Integer(i)) => Some(i as f64),
+                                _ => None,
+                            };
+                            (q, d_val)
                         }
-                        _ => None,
+                        (q, d, _) => {
+                            let d_val = match d {
+                                Some(Value::Number(n)) => Some(n),
+                                Some(Value::Integer(i)) => Some(i as f64),
+                                _ => None,
+                            };
+                            (q, d_val)
+                        }
                     };
+                    async move {
+                        let d_str = delay
+                            .map(|d| format!(" (delay: {d:.1}s)"))
+                            .unwrap_or_default();
 
-                    if let Some(button) = btn {
-                        println!("  \x1b[33m[EVENT CLICK]\x1b[0m Matched button: \"{}\"{d_str}", button.text);
-                        Ok(button.text.clone())
-                    } else if let Value::String(s) = query_val {
-                        let query_str = s.to_str().map_err(|e| mlua::Error::RuntimeError(e.to_string()))?.to_string();
-                        println!("  \x1b[33m[EVENT CLICK FALLBACK]\x1b[0m Sent button text: \"{query_str}\"{d_str}");
-                        Ok(query_str)
-                    } else {
-                        Err(mlua::Error::RuntimeError("Button not found on message".into()))
+                        let btn = match &query_val {
+                            Value::Integer(i) if *i >= 1 => {
+                                markup.flat_button_at((*i - 1) as usize)
+                            }
+                            Value::Number(n) if *n >= 1.0 => {
+                                markup.flat_button_at((*n as usize) - 1)
+                            }
+                            Value::String(s) => {
+                                let q = s
+                                    .to_str()
+                                    .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+                                markup.find_button(&q).map(|(_, _, b)| b)
+                            }
+                            _ => None,
+                        };
+
+                        if let Some(button) = btn {
+                            println!(
+                                "  \x1b[33m[EVENT CLICK]\x1b[0m Matched button: \"{}\"{d_str}",
+                                button.text
+                            );
+                            Ok(button.text.clone())
+                        } else if let Value::String(s) = query_val {
+                            let query_str = s
+                                .to_str()
+                                .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?
+                                .to_string();
+                            println!("  \x1b[33m[EVENT CLICK FALLBACK]\x1b[0m Sent button text: \"{query_str}\"{d_str}");
+                            Ok(query_str)
+                        } else {
+                            Err(mlua::Error::RuntimeError(
+                                "Button not found on message".into(),
+                            ))
+                        }
                     }
-                }
-            })
+                },
+            )
             .map_err(ScriptError::LuaError)?;
         event
             .set("click", click_fn.clone())
@@ -570,7 +617,14 @@ impl BotSimulator {
         // event.edit
         let edit_fn = self
             .lua
-            .create_function(|_, new_text: String| {
+            .create_function(|_, (a1, a2): (Value, Option<Value>)| {
+                let new_text = match (a1, a2) {
+                    (Value::Table(_), Some(Value::String(s))) => s.to_str()?.to_string(),
+                    (Value::Table(_), Some(Value::Integer(i))) => i.to_string(),
+                    (Value::String(s), _) => s.to_str()?.to_string(),
+                    (Value::Integer(i), _) => i.to_string(),
+                    _ => return Err(mlua::Error::RuntimeError("edit expects string text".into())),
+                };
                 println!("  \x1b[36m[EVENT EDIT]\x1b[0m \"{new_text}\"");
                 Ok(())
             })
@@ -580,7 +634,7 @@ impl BotSimulator {
         // event.delete
         let del_fn = self
             .lua
-            .create_function(|_, ()| {
+            .create_function(|_, _: Option<Value>| {
                 println!("  \x1b[31m[EVENT DELETE]\x1b[0m Message deleted");
                 Ok(())
             })
@@ -590,7 +644,16 @@ impl BotSimulator {
         // event.react
         let react_fn = self
             .lua
-            .create_function(|_, emoji: String| {
+            .create_function(|_, (a1, a2): (Value, Option<Value>)| {
+                let emoji = match (a1, a2) {
+                    (Value::Table(_), Some(Value::String(s))) => s.to_str()?.to_string(),
+                    (Value::String(s), _) => s.to_str()?.to_string(),
+                    _ => {
+                        return Err(mlua::Error::RuntimeError(
+                            "react expects emoji string".into(),
+                        ));
+                    }
+                };
                 println!("  \x1b[35m[EVENT REACT]\x1b[0m Emoji: {emoji}");
                 Ok(())
             })
@@ -807,5 +870,31 @@ mod tests {
             .eval()
             .unwrap();
         assert_eq!(res, "text");
+    }
+
+    #[tokio::test]
+    async fn test_simulator_event_colon_syntax() {
+        let temp_dir = std::env::temp_dir();
+        let script_path = temp_dir.join("test_sim_colon.lua");
+        let script = r#"
+            local handled = false
+            ox.on_message(function(event)
+                -- Colon method invocation
+                event:reply("hello")
+                event:edit("new text")
+                event:react("👍")
+                event:delete()
+                handled = true
+            end)
+            return true
+        "#;
+        std::fs::write(&script_path, script).unwrap();
+
+        let console = Arc::new(MockConsole);
+        let mut sim = BotSimulator::new(&script_path, console).await.unwrap();
+        sim.load_script().await.unwrap();
+
+        // Simulate incoming message
+        sim.simulate_incoming("test message").await.unwrap();
     }
 }

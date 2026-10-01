@@ -165,12 +165,24 @@ pub fn register_storage_api(
 ) -> Result<(), mlua::Error> {
     let storage_table = lua.create_table()?;
 
-    // ox.storage.get(key, [default])
+    // ox.storage.get(key, [default]) OR ox.storage:get(key, [default])
     let store_get = storage.clone();
-    let get_fn =
-        lua.create_async_function(move |lua, (key, default_val): (String, Option<Value>)| {
+    let get_fn = lua.create_async_function(
+        move |lua, (a1, a2, a3): (Value, Option<Value>, Option<Value>)| {
             let store = store_get.clone();
             async move {
+                let (key_val, default_val) = match (a1, a2, a3) {
+                    (Value::Table(_), Some(k), def) => (k, def),
+                    (k, def, _) => (k, def),
+                };
+                let key = match key_val {
+                    Value::String(s) => s.to_str()?.to_string(),
+                    _ => {
+                        return Err(mlua::Error::RuntimeError(
+                            "storage:get requires string key".into(),
+                        ));
+                    }
+                };
                 let guard = store.data.read().await;
                 if let Some(val) = guard.get(&key) {
                     json_to_lua(&lua, val)
@@ -178,43 +190,87 @@ pub fn register_storage_api(
                     Ok(default_val.unwrap_or(Value::Nil))
                 }
             }
-        })?;
+        },
+    )?;
     storage_table.set("get", get_fn)?;
 
-    // ox.storage.set(key, value)
+    // ox.storage.set(key, value) OR ox.storage:set(key, value)
     let store_set = storage.clone();
-    let set_fn = lua.create_async_function(move |_, (key, val): (String, Value)| {
-        let store = store_set.clone();
-        async move {
-            let json_val = lua_to_json(val)?;
-            {
-                let mut guard = store.data.write().await;
-                guard.insert(key, json_val);
+    let set_fn = lua.create_async_function(
+        move |_, (a1, a2, a3): (Value, Option<Value>, Option<Value>)| {
+            let store = store_set.clone();
+            async move {
+                let (key_val, val) = match (a1, a2, a3) {
+                    (Value::Table(_), Some(k), Some(v)) => (k, v),
+                    (k, Some(v), _) => (k, v),
+                    _ => {
+                        return Err(mlua::Error::RuntimeError(
+                            "storage:set requires key and value".into(),
+                        ));
+                    }
+                };
+                let key = match key_val {
+                    Value::String(s) => s.to_str()?.to_string(),
+                    _ => {
+                        return Err(mlua::Error::RuntimeError(
+                            "storage:set requires string key".into(),
+                        ));
+                    }
+                };
+                let json_val = lua_to_json(val)?;
+                {
+                    let mut guard = store.data.write().await;
+                    guard.insert(key, json_val);
+                }
+                if let Err(e) = store.flush().await {
+                    warn!(error = %e, "Failed to flush bot storage to disk");
+                }
+                Ok(())
             }
-            if let Err(e) = store.flush().await {
-                warn!(error = %e, "Failed to flush bot storage to disk");
-            }
-            Ok(())
-        }
-    })?;
+        },
+    )?;
     storage_table.set("set", set_fn)?;
 
-    // ox.storage.has(key) -> boolean
+    // ox.storage.has(key) OR ox.storage:has(key)
     let store_has = storage.clone();
-    let has_fn = lua.create_async_function(move |_, key: String| {
+    let has_fn = lua.create_async_function(move |_, (a1, a2): (Value, Option<Value>)| {
         let store = store_has.clone();
         async move {
+            let key_val = match (a1, a2) {
+                (Value::Table(_), Some(k)) => k,
+                (k, _) => k,
+            };
+            let key = match key_val {
+                Value::String(s) => s.to_str()?.to_string(),
+                _ => {
+                    return Err(mlua::Error::RuntimeError(
+                        "storage:has requires string key".into(),
+                    ));
+                }
+            };
             let guard = store.data.read().await;
             Ok(guard.contains_key(&key))
         }
     })?;
     storage_table.set("has", has_fn)?;
 
-    // ox.storage.delete(key)
+    // ox.storage.delete(key) OR ox.storage:delete(key)
     let store_del = storage.clone();
-    let del_fn = lua.create_async_function(move |_, key: String| {
+    let del_fn = lua.create_async_function(move |_, (a1, a2): (Value, Option<Value>)| {
         let store = store_del.clone();
         async move {
+            let key_val = match (a1, a2) {
+                (Value::Table(_), Some(k)) => k,
+                (k, _) => k,
+            };
+            let key = match key_val {
+                Value::String(s) => s.to_str()?.to_string(),
+                _ => {
+                    return Err(mlua::Error::RuntimeError(
+                        "storage:delete requires string key".into(),
+                    ));
+                }
+            };
             let removed = {
                 let mut guard = store.data.write().await;
                 guard.remove(&key).is_some()
@@ -230,7 +286,7 @@ pub fn register_storage_api(
 
     // ox.storage.all() -> table
     let store_all = storage.clone();
-    let all_fn = lua.create_async_function(move |lua, ()| {
+    let all_fn = lua.create_async_function(move |lua, _: Option<Value>| {
         let store = store_all.clone();
         async move {
             let guard = store.data.read().await;
@@ -245,7 +301,7 @@ pub fn register_storage_api(
 
     // ox.storage.clear()
     let store_clear = storage;
-    let clear_fn = lua.create_async_function(move |_, ()| {
+    let clear_fn = lua.create_async_function(move |_, _: Option<Value>| {
         let store = store_clear.clone();
         async move {
             {
@@ -313,6 +369,36 @@ mod tests {
         let guard = storage2.data.read().await;
         assert_eq!(guard.get("counter"), Some(&JsonValue::from(10)));
 
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_storage_colon_syntax() {
+        let temp_dir = std::env::temp_dir().join(format!("oxide_test_{}", rand::random::<u32>()));
+        let storage = BotStorage::open(&temp_dir, "test_bot").await;
+
+        let lua = Lua::new();
+        let ox = lua.create_table().unwrap();
+        register_storage_api(&lua, &ox, storage.clone()).unwrap();
+        lua.globals().set("ox", ox).unwrap();
+
+        let script = r#"
+            ox.storage:set("score", 42)
+            assert(ox.storage:has("score") == true)
+            assert(ox.storage:get("score") == 42)
+            assert(ox.storage:get("missing", 99) == 99)
+            local all = ox.storage:all()
+            assert(all.score == 42)
+            assert(ox.storage:delete("score") == true)
+            assert(ox.storage:has("score") == false)
+            ox.storage:set("a", 1)
+            ox.storage:clear()
+            assert(ox.storage:has("a") == false)
+            return true
+        "#;
+
+        let res: bool = lua.load(script).eval_async().await.unwrap();
+        assert!(res);
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     }
 }

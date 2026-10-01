@@ -459,6 +459,30 @@ impl LuaBotRunner {
         Ok(())
     }
 
+    /// Helper to shift Lua arguments when a method is called with colon syntax `event:method(...)`
+    /// where `arg1` is the `event` table (`self`).
+    fn shift_event_args(
+        a1: Value,
+        a2: Option<Value>,
+        a3: Option<Value>,
+        a4: Option<Value>,
+    ) -> (Value, Option<Value>, Option<Value>) {
+        if matches!(a1, Value::Table(_)) {
+            (a2.unwrap_or(Value::Nil), a3, a4)
+        } else {
+            (a1, a2, a3)
+        }
+    }
+
+    /// Helper to convert optional Lua number/integer to f64.
+    fn value_to_f64(val: Option<Value>) -> Option<f64> {
+        match val {
+            Some(Value::Number(n)) => Some(n),
+            Some(Value::Integer(i)) => Some(i as f64),
+            _ => None,
+        }
+    }
+
     /// Constructs the Lua event table and binds helper methods.
     #[allow(clippy::too_many_arguments)]
     fn create_event_table(
@@ -536,40 +560,48 @@ impl LuaBotRunner {
 
         // event.reply(reply_text, [options_or_delay], [extra_delay])
         let client_reply = self.client.clone();
-        let reply_fn =
-            self.lua
-                .create_async_function(
-                    move |_,
-                          (reply_text, opt_val, extra_delay): (
-                        String,
-                        Option<Value>,
-                        Option<f64>,
-                    )| {
-                        let client = client_reply.clone();
-                        async move {
-                            let mut opts = parse_message_options(opt_val)?;
-                            if extra_delay.is_some() {
-                                opts.delay = extra_delay;
+        let reply_fn = self
+            .lua
+            .create_async_function(
+                move |_, (a1, a2, a3, a4): (Value, Option<Value>, Option<Value>, Option<Value>)| {
+                    let client = client_reply.clone();
+                    async move {
+                        let (reply_val, opt_val, extra_delay_val) =
+                            Self::shift_event_args(a1, a2, a3, a4);
+                        let reply_text = match reply_val {
+                            Value::String(s) => s.to_str()?.to_string(),
+                            Value::Integer(i) => i.to_string(),
+                            Value::Number(n) => n.to_string(),
+                            _ => {
+                                return Err(mlua::Error::RuntimeError(
+                                    "reply expects text message as first argument".into(),
+                                ));
                             }
-                            apply_optional_delay(opts.delay).await;
-
-                            let reply_message =
-                                build_input_message(&reply_text, opts.parse_mode.as_deref())
-                                    .reply_to(Some(message_id));
-
-                            invoke_send_message(&client, peer_ref, reply_message).await?;
-                            let snippet = if reply_text.chars().count() > 40 {
-                                let s: String = reply_text.chars().take(40).collect();
-                                format!("{s}...")
-                            } else {
-                                reply_text.clone()
-                            };
-                            info!(target: "oxidegram", "[REPLY] [{chat_id}] \"{snippet}\"");
-                            Ok(())
+                        };
+                        let extra_delay = Self::value_to_f64(extra_delay_val);
+                        let mut opts = parse_message_options(opt_val)?;
+                        if extra_delay.is_some() {
+                            opts.delay = extra_delay;
                         }
-                    },
-                )
-                .map_err(ScriptError::LuaError)?;
+                        apply_optional_delay(opts.delay).await;
+
+                        let reply_message =
+                            build_input_message(&reply_text, opts.parse_mode.as_deref())
+                                .reply_to(Some(message_id));
+
+                        invoke_send_message(&client, peer_ref, reply_message).await?;
+                        let snippet = if reply_text.chars().count() > 40 {
+                            let s: String = reply_text.chars().take(40).collect();
+                            format!("{s}...")
+                        } else {
+                            reply_text.clone()
+                        };
+                        info!(target: "oxidegram", "[REPLY] [{chat_id}] \"{snippet}\"");
+                        Ok(())
+                    }
+                },
+            )
+            .map_err(ScriptError::LuaError)?;
         event_table
             .set("reply", reply_fn)
             .map_err(ScriptError::LuaError)?;
@@ -578,24 +610,39 @@ impl LuaBotRunner {
         let client_edit = self.client.clone();
         let edit_fn = self
             .lua
-            .create_async_function(move |_, (new_text, opt_val): (String, Option<Value>)| {
-                let client = client_edit.clone();
-                async move {
-                    let opts = parse_message_options(opt_val)?;
-                    apply_optional_delay(opts.delay).await;
-                    let input_msg = build_input_message(&new_text, opts.parse_mode.as_deref());
+            .create_async_function(
+                move |_, (a1, a2, a3): (Value, Option<Value>, Option<Value>)| {
+                    let client = client_edit.clone();
+                    async move {
+                        let (text_val, opt_val, _) = Self::shift_event_args(a1, a2, a3, None);
+                        let new_text = match text_val {
+                            Value::String(s) => s.to_str()?.to_string(),
+                            Value::Integer(i) => i.to_string(),
+                            Value::Number(n) => n.to_string(),
+                            _ => {
+                                return Err(mlua::Error::RuntimeError(
+                                    "edit expects new text as first argument".into(),
+                                ));
+                            }
+                        };
+                        let opts = parse_message_options(opt_val)?;
+                        apply_optional_delay(opts.delay).await;
+                        let input_msg = build_input_message(&new_text, opts.parse_mode.as_deref());
 
-                    tokio::time::timeout(
-                        NETWORK_TIMEOUT,
-                        client.edit_message(peer_ref, message_id, input_msg),
-                    )
-                    .await
-                    .map_err(|_| mlua::Error::RuntimeError("Edit message timed out".into()))?
-                    .map_err(|e| mlua::Error::RuntimeError(format!("Edit message error: {e}")))?;
+                        tokio::time::timeout(
+                            NETWORK_TIMEOUT,
+                            client.edit_message(peer_ref, message_id, input_msg),
+                        )
+                        .await
+                        .map_err(|_| mlua::Error::RuntimeError("Edit message timed out".into()))?
+                        .map_err(|e| {
+                            mlua::Error::RuntimeError(format!("Edit message error: {e}"))
+                        })?;
 
-                    Ok(())
-                }
-            })
+                        Ok(())
+                    }
+                },
+            )
             .map_err(ScriptError::LuaError)?;
         event_table
             .set("edit", edit_fn)
@@ -605,9 +652,13 @@ impl LuaBotRunner {
         let client_del = self.client.clone();
         let delete_fn = self
             .lua
-            .create_async_function(move |_, delay: Option<f64>| {
+            .create_async_function(move |_, (a1, a2): (Option<Value>, Option<Value>)| {
                 let client = client_del.clone();
                 async move {
+                    let delay = match (a1, a2) {
+                        (Some(Value::Table(_)), d) => Self::value_to_f64(d),
+                        (d, _) => Self::value_to_f64(d),
+                    };
                     apply_optional_delay(delay).await;
                     tokio::time::timeout(
                         NETWORK_TIMEOUT,
@@ -628,20 +679,34 @@ impl LuaBotRunner {
         let client_react = self.client.clone();
         let react_fn = self
             .lua
-            .create_async_function(move |_, (emoji, delay): (String, Option<f64>)| {
-                let client = client_react.clone();
-                async move {
-                    apply_optional_delay(delay).await;
-                    tokio::time::timeout(
-                        NETWORK_TIMEOUT,
-                        client.send_reactions(peer_ref, message_id, emoji.as_str()),
-                    )
-                    .await
-                    .map_err(|_| mlua::Error::RuntimeError("Send reaction timed out".into()))?
-                    .map_err(|e| mlua::Error::RuntimeError(format!("Send reaction error: {e}")))?;
-                    Ok(())
-                }
-            })
+            .create_async_function(
+                move |_, (a1, a2, a3): (Value, Option<Value>, Option<Value>)| {
+                    let client = client_react.clone();
+                    async move {
+                        let (emoji_val, delay_val, _) = Self::shift_event_args(a1, a2, a3, None);
+                        let emoji = match emoji_val {
+                            Value::String(s) => s.to_str()?.to_string(),
+                            _ => {
+                                return Err(mlua::Error::RuntimeError(
+                                    "react expects emoji string as first argument".into(),
+                                ));
+                            }
+                        };
+                        let delay = Self::value_to_f64(delay_val);
+                        apply_optional_delay(delay).await;
+                        tokio::time::timeout(
+                            NETWORK_TIMEOUT,
+                            client.send_reactions(peer_ref, message_id, emoji.as_str()),
+                        )
+                        .await
+                        .map_err(|_| mlua::Error::RuntimeError("Send reaction timed out".into()))?
+                        .map_err(|e| {
+                            mlua::Error::RuntimeError(format!("Send reaction error: {e}"))
+                        })?;
+                        Ok(())
+                    }
+                },
+            )
             .map_err(ScriptError::LuaError)?;
         event_table
             .set("react", react_fn)
@@ -651,9 +716,13 @@ impl LuaBotRunner {
         let client_pin = self.client.clone();
         let pin_fn = self
             .lua
-            .create_async_function(move |_, delay: Option<f64>| {
+            .create_async_function(move |_, (a1, a2): (Option<Value>, Option<Value>)| {
                 let client = client_pin.clone();
                 async move {
+                    let delay = match (a1, a2) {
+                        (Some(Value::Table(_)), d) => Self::value_to_f64(d),
+                        (d, _) => Self::value_to_f64(d),
+                    };
                     apply_optional_delay(delay).await;
                     tokio::time::timeout(NETWORK_TIMEOUT, client.pin_message(peer_ref, message_id))
                         .await
@@ -674,74 +743,82 @@ impl LuaBotRunner {
         let markup_click = markup.clone();
         let click_fn = self
             .lua
-            .create_async_function(move |_, (query_val, delay): (Value, Option<f64>)| {
-                let client = client_click.clone();
-                let markup = markup_click.clone();
-                async move {
-                    apply_optional_delay(delay).await;
-                    let btn = match &query_val {
-                        Value::Integer(i) if *i >= 1 => markup.flat_button_at((*i - 1) as usize),
-                        Value::Number(n) if *n >= 1.0 => markup.flat_button_at((*n as usize) - 1),
-                        Value::String(s) => {
-                            let query_str = s
-                                .to_str()
-                                .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
-                            markup.find_button(&query_str).map(|(_, _, b)| b)
-                        }
-                        _ => {
-                            return Err(mlua::Error::RuntimeError(
-                                "click expects button text or 1-based index".into(),
-                            ));
-                        }
-                    };
+            .create_async_function(
+                move |_, (a1, a2, a3): (Value, Option<Value>, Option<Value>)| {
+                    let client = client_click.clone();
+                    let markup = markup_click.clone();
+                    async move {
+                        let (query_val, delay_val, _) = Self::shift_event_args(a1, a2, a3, None);
+                        let delay = Self::value_to_f64(delay_val);
+                        apply_optional_delay(delay).await;
+                        let btn = match &query_val {
+                            Value::Integer(i) if *i >= 1 => {
+                                markup.flat_button_at((*i - 1) as usize)
+                            }
+                            Value::Number(n) if *n >= 1.0 => {
+                                markup.flat_button_at((*n as usize) - 1)
+                            }
+                            Value::String(s) => {
+                                let query_str = s
+                                    .to_str()
+                                    .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+                                markup.find_button(&query_str).map(|(_, _, b)| b)
+                            }
+                            _ => {
+                                return Err(mlua::Error::RuntimeError(
+                                    "click expects button text or 1-based index".into(),
+                                ));
+                            }
+                        };
 
-                    if let Some(button) = btn {
-                        info!(target: "oxidegram", "[ACT] Clicked button: \"{}\"", button.text);
-                        match &button.kind {
-                            crate::domain::automation::ButtonKind::Callback(data) => {
-                                use grammers_tl_types as tl;
-                                let input_peer = tl::enums::InputPeer::from(&peer_ref);
-                                let req = tl::functions::messages::GetBotCallbackAnswer {
-                                    peer: input_peer,
-                                    msg_id: message_id,
-                                    data: Some(data.clone()),
-                                    game: false,
-                                    password: None,
-                                };
-                                let res = invoke_with_flood_wait(&client, &req).await?;
-                                match res {
-                                    tl::enums::messages::BotCallbackAnswer::Answer(ans) => {
-                                        Ok(ans.message.unwrap_or_default())
+                        if let Some(button) = btn {
+                            info!(target: "oxidegram", "[ACT] Clicked button: \"{}\"", button.text);
+                            match &button.kind {
+                                crate::domain::automation::ButtonKind::Callback(data) => {
+                                    use grammers_tl_types as tl;
+                                    let input_peer = tl::enums::InputPeer::from(&peer_ref);
+                                    let req = tl::functions::messages::GetBotCallbackAnswer {
+                                        peer: input_peer,
+                                        msg_id: message_id,
+                                        data: Some(data.clone()),
+                                        game: false,
+                                        password: None,
+                                    };
+                                    let res = invoke_with_flood_wait(&client, &req).await?;
+                                    match res {
+                                        tl::enums::messages::BotCallbackAnswer::Answer(ans) => {
+                                            Ok(ans.message.unwrap_or_default())
+                                        }
                                     }
                                 }
+                                crate::domain::automation::ButtonKind::Url(url) => Ok(url.clone()),
+                                crate::domain::automation::ButtonKind::Text => {
+                                    let input_msg = InputMessage::new().text(button.text.clone());
+                                    invoke_send_message(&client, peer_ref, input_msg).await?;
+                                    Ok(button.text.clone())
+                                }
+                                _ => Ok(String::new()),
                             }
-                            crate::domain::automation::ButtonKind::Url(url) => Ok(url.clone()),
-                            crate::domain::automation::ButtonKind::Text => {
-                                let input_msg = InputMessage::new().text(button.text.clone());
-                                invoke_send_message(&client, peer_ref, input_msg).await?;
-                                Ok(button.text.clone())
-                            }
-                            _ => Ok(String::new()),
+                        } else if let Value::String(s) = query_val {
+                            // In Telegram, clicking a regular reply button simply sends its text as a message.
+                            // If the button wasn't explicitly found in the parsed keyboard (e.g. sent in earlier message),
+                            // send the requested text directly as a resilient fallback.
+                            let text = s
+                                .to_str()
+                                .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?
+                                .to_string();
+                            info!(target: "oxidegram", "[ACT] Pressed reply button: \"{}\"", text);
+                            let input_msg = InputMessage::new().text(text.clone());
+                            invoke_send_message(&client, peer_ref, input_msg).await?;
+                            Ok(text)
+                        } else {
+                            Err(mlua::Error::RuntimeError(
+                                "Button not found on message".into(),
+                            ))
                         }
-                    } else if let Value::String(s) = query_val {
-                        // In Telegram, clicking a regular reply button simply sends its text as a message.
-                        // If the button wasn't explicitly found in the parsed keyboard (e.g. sent in earlier message),
-                        // send the requested text directly as a resilient fallback.
-                        let text = s
-                            .to_str()
-                            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?
-                            .to_string();
-                        info!(target: "oxidegram", "[ACT] Pressed reply button: \"{}\"", text);
-                        let input_msg = InputMessage::new().text(text.clone());
-                        invoke_send_message(&client, peer_ref, input_msg).await?;
-                        Ok(text)
-                    } else {
-                        Err(mlua::Error::RuntimeError(
-                            "Button not found on message".into(),
-                        ))
                     }
-                }
-            })
+                },
+            )
             .map_err(ScriptError::LuaError)?;
         event_table
             .set("click", click_fn.clone())

@@ -761,26 +761,44 @@ pub fn register_ox_table(
 
     // ox.log table
     let log_table = lua.create_table().map_err(ScriptError::LuaError)?;
+    let extract_log_msg = |a1: Value, a2: Option<Value>| -> Result<String, mlua::Error> {
+        let val = match (a1, a2) {
+            (Value::Table(_), Some(v)) => v,
+            (v, _) => v,
+        };
+        match val {
+            Value::String(s) => Ok(s.to_str()?.to_string()),
+            Value::Integer(i) => Ok(i.to_string()),
+            Value::Number(n) => Ok(n.to_string()),
+            Value::Boolean(b) => Ok(b.to_string()),
+            _ => Ok(format!("{val:?}")),
+        }
+    };
+
     let log_info = lua
-        .create_function(|_, msg: String| {
+        .create_function(move |_, (a1, a2): (Value, Option<Value>)| {
+            let msg = extract_log_msg(a1, a2)?;
             tracing::info!(target: "lua", "[LUA] {msg}");
             Ok(())
         })
         .map_err(ScriptError::LuaError)?;
     let log_warn = lua
-        .create_function(|_, msg: String| {
+        .create_function(move |_, (a1, a2): (Value, Option<Value>)| {
+            let msg = extract_log_msg(a1, a2)?;
             tracing::warn!(target: "lua", "[LUA] {msg}");
             Ok(())
         })
         .map_err(ScriptError::LuaError)?;
     let log_error = lua
-        .create_function(|_, msg: String| {
+        .create_function(move |_, (a1, a2): (Value, Option<Value>)| {
+            let msg = extract_log_msg(a1, a2)?;
             tracing::error!(target: "lua", "[LUA] {msg}");
             Ok(())
         })
         .map_err(ScriptError::LuaError)?;
     let log_debug = lua
-        .create_function(|_, msg: String| {
+        .create_function(move |_, (a1, a2): (Value, Option<Value>)| {
+            let msg = extract_log_msg(a1, a2)?;
             tracing::debug!(target: "lua", "[LUA] {msg}");
             Ok(())
         })

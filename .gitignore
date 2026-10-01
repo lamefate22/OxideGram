@@ -3,3 +3,5 @@
 /data/logs
 /data/sessions
 /data/config.oxide
+/data/.device_vault
+/data/storage

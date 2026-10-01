@@ -56,6 +56,11 @@ async fn run() -> Result<(), OxideError> {
     let mut config = OxideConfig::default();
     config.load().await?;
 
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && args[1] == "check" {
+        return run_check(console.as_ref(), &config).await;
+    }
+
     let menu_options = vec![
         "1. Run Single Bot".to_string(),
         "2. Run Multi-Session Cluster".to_string(),
@@ -323,6 +328,68 @@ async fn create_template_flow(
     }
 
     Ok(())
+}
+
+async fn run_check(
+    console: &presentation::console::OxideConsole,
+    config: &infrastructure::session_repository::OxideConfig,
+) -> Result<(), OxideError> {
+    use application::authentication::SessionRepository;
+    use infrastructure::script_catalog::FileSystemScriptCatalog;
+
+    console.print("[check] Starting OxideGram diagnostics...\n");
+
+    // 1. Check sessions
+    let sessions = config.session_phones();
+    console.print(&format!(
+        "[check] Config: data/config.oxide (OK, {} saved sessions)",
+        sessions.len()
+    ));
+
+    // 2. Check scripts
+    let loader = FileSystemScriptCatalog::default();
+    let bots = loader.search_bots().await?;
+    console.print(&format!(
+        "[check] Bots directory: {} ({} scripts found)\n",
+        loader.bots_dir.display(),
+        bots.len()
+    ));
+
+    let lua = mlua::Lua::new();
+    let mut syntax_errors = 0;
+
+    for bot in &bots {
+        match tokio::fs::read_to_string(&bot.path).await {
+            Ok(content) => match lua.load(&content).into_function() {
+                Ok(_) => {
+                    console.print(&format!("  [OK]     {} (syntax valid)", bot.name));
+                }
+                Err(err) => {
+                    syntax_errors += 1;
+                    console.print(&format!("  [FAILED] {} (syntax error: {})", bot.name, err));
+                }
+            },
+            Err(err) => {
+                syntax_errors += 1;
+                console.print(&format!("  [FAILED] {} (I/O error: {})", bot.name, err));
+            }
+        }
+    }
+
+    console.print("");
+    if syntax_errors > 0 {
+        console.print(&format!(
+            "[check failed] Found {} error(s) across scripts.",
+            syntax_errors
+        ));
+        Err(
+            errors::ScriptError::Runtime(format!("{syntax_errors} scripts have syntax errors"))
+                .into(),
+        )
+    } else {
+        console.print("[check passed] All configuration and bot scripts are valid!");
+        Ok(())
+    }
 }
 
 fn format_error_chain(error: &(dyn Error + 'static)) -> String {

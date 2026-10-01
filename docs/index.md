@@ -126,6 +126,17 @@ OxideGram uses a dual-layer logging system powered by `tracing` and `tracing-app
 
 ---
 
+## IDE Autocompletion & Type Definitions
+
+OxideGram includes comprehensive **LuaCATS** (Lua Language Server / EmmyLua) type definitions located in `types/oxidegram.d.lua`.
+
+When opening the repository in **Visual Studio Code** (with the recommended `sumneko.lua` extension) or **Neovim** (via `lua_ls`):
+- **IntelliSense on `ox.`**: Instant autocompletion with full docstrings, signatures, parameter types, and inline examples.
+- **Contextual `event` typing**: Inside `ox.on_message` callbacks or flow step actions, typing `event.` immediately suggests `event.reply`, `event.click`, `event.edit`, `event.react`, `event.chat_id`, `event.buttons`, and regex captures.
+- **Zero Diagnostics Noise**: Globals `ox`, `contains`, `starts_with`, `ends_with`, `split`, and `trim` are recognized automatically via pre-configured `.vscode/settings.json`.
+
+---
+
 ## Script Lifecycle
 
 1. OxideGram scans `data/bots/` for `.lua` script files.

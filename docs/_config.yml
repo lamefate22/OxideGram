@@ -1,8 +1,10 @@
-title: OxideGram Scripting
-description: Lua scripting engine reference and examples for OxideGram
-theme: jekyll-theme-minimal
+title: OxideGram
+description: High-performance Telegram userbot & Lua automation engine in Rust
+repository: lamefate22/OxideGram
+version: v1.3.0
 markdown: kramdown
 kramdown:
   input: GFM
+  syntax_highlighter: rouge
 exclude:
   - README.md

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  {% include head.html %}
+</head>
+<body class="docs-body">
+  {% include header.html %}
+
+  <div class="site-layout">
+    {% include sidebar.html %}
+
+    <main class="site-main" id="mainContent">
+      <div class="content-wrapper">
+        <article class="markdown-body" id="articleBody">
+          {{ content }}
+        </article>
+
+        {% include footer.html %}
+      </div>
+    </main>
+  </div>
+
+  <script src="{{ site.baseurl }}/assets/js/app.js" defer></script>
+</body>
+</html>

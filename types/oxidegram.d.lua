@@ -1,6 +1,6 @@
----@meta OxideGram
+---@meta
 --- OxideGram Lua Scripting Engine Type Definitions
---- Compatible with Lua Language Server (LuaLS), EmmyLua, VS Code, and Neovim.
+--- Compatible with Lua Language Server (LuaLS), EmmyLua, VS Code, and Zed.
 
 --------------------------------------------------------------------------------
 -- 1. General & Options Types

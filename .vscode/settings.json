@@ -1,8 +1,6 @@
 {
   "Lua.runtime.version": "Lua 5.4",
-  "Lua.workspace.library": [
-    "${workspaceFolder}/types"
-  ],
+  "Lua.workspace.checkThirdParty": false,
   "Lua.diagnostics.globals": [
     "ox",
     "contains",
@@ -14,5 +12,5 @@
   "Lua.hint.enable": true,
   "Lua.hint.paramType": true,
   "Lua.hint.setType": true,
-  "Lua.completion.callSnippet": "Both"
+  "Lua.completion.callSnippet": "Replace"
 }

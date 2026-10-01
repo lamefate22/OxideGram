@@ -14,9 +14,6 @@
             "version": "Lua 5.4"
           },
           "workspace": {
-            "library": [
-              "types"
-            ],
             "checkThirdParty": false
           },
           "diagnostics": {
@@ -33,6 +30,9 @@
             "enable": true,
             "paramType": true,
             "setType": true
+          },
+          "completion": {
+            "callSnippet": "Replace"
           }
         }
       }

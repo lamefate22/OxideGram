@@ -15,7 +15,7 @@ pub trait SessionRepository: Send {
     ) -> Result<(), OxideError>;
 }
 
-pub trait LoginConsole: Sync {
+pub trait LoginConsole: Send + Sync {
     fn ask_text(&self, prompt: &str) -> Result<String, String>;
     fn ask_password(&self, prompt: &str) -> Result<String, String>;
     fn ask_integer(&self, prompt: &str) -> Result<i32, String>;
@@ -80,10 +80,13 @@ pub trait TelegramAuthGateway: SessionRestorer + InteractiveAuthenticator {}
 
 impl<T> TelegramAuthGateway for T where T: SessionRestorer + InteractiveAuthenticator {}
 
+use crate::application::master_key::MasterKeyProvider;
+
 pub struct LoginService<'a, R, C, G> {
     sessions: &'a mut R,
     console: &'a C,
     telegram: &'a G,
+    key_provider: Option<&'a (dyn MasterKeyProvider + 'a)>,
 }
 
 impl<'a, R, C, G> LoginService<'a, R, C, G>
@@ -97,7 +100,14 @@ where
             sessions,
             console,
             telegram,
+            key_provider: None,
         }
+    }
+
+    /// Attaches a master key provider for resolving credentials via hardware vault or ENV.
+    pub fn with_key_provider(mut self, provider: &'a (dyn MasterKeyProvider + 'a)) -> Self {
+        self.key_provider = Some(provider);
+        self
     }
 
     pub async fn login(&mut self) -> Result<G::Connected, OxideError> {
@@ -121,10 +131,13 @@ where
                 self.sessions.session_phones(),
             )
             .map_err(AuthError::UiError)?;
-        let password = self
-            .console
-            .ask_password("Enter your decryption password:")
-            .map_err(AuthError::UiError)?;
+        let password = if let Some(kp) = self.key_provider {
+            kp.resolve_master_key().await?
+        } else {
+            self.console
+                .ask_password("Enter your decryption password:")
+                .map_err(AuthError::UiError)?
+        };
         let session = self
             .sessions
             .session(&phone)
@@ -171,10 +184,13 @@ where
                 .await?;
         }
 
-        let encryption_password = self
-            .console
-            .ask_password("Enter your encryption password:")
-            .map_err(AuthError::UiError)?;
+        let encryption_password = if let Some(kp) = self.key_provider {
+            kp.resolve_master_key().await?
+        } else {
+            self.console
+                .ask_password("Enter your encryption password:")
+                .map_err(AuthError::UiError)?
+        };
         let session = self
             .telegram
             .capture_session(&pending, &encryption_password)

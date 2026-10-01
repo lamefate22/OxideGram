@@ -1,6 +1,6 @@
 //! OxideGram: High-performance, secure, and extensible Telegram automation client in Rust.
 //!
-//! Entry point for the interactive terminal interface.
+//! Entry point for CLI commands and interactive terminal interface.
 
 mod application;
 mod domain;
@@ -8,16 +8,38 @@ mod errors;
 mod infrastructure;
 mod presentation;
 
+use application::authentication::{SessionRepository, SessionRestorer};
+use application::master_key::MasterKeyProvider;
+use clap::Parser;
 use errors::{OxideError, format_error_chain};
+use infrastructure::crypto::HardwareMasterKeyProvider;
+use infrastructure::logging::{LogVerbosity, initialize_logger};
+use infrastructure::session_repository::OxideConfig;
+use presentation::cli::{Cli, Commands, SessionAction, TemplateAction};
+use presentation::console::OxideConsole;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    use infrastructure::logging::initialize_logger;
+    let cli = match Cli::try_parse() {
+        Ok(c) => c,
+        Err(e) => {
+            e.exit();
+        }
+    };
 
-    let _guard = match initialize_logger() {
+    let verbosity = if cli.verbose {
+        LogVerbosity::Verbose
+    } else if cli.quiet {
+        LogVerbosity::Quiet
+    } else {
+        LogVerbosity::Normal
+    };
+
+    let _guard = match initialize_logger(verbosity) {
         Ok(guard) => guard,
         Err(error) => {
             eprintln!(
@@ -29,7 +51,7 @@ async fn main() -> ExitCode {
     };
 
     info!(version = env!("CARGO_PKG_VERSION"), "OxideGram started");
-    match run().await {
+    match run(cli).await {
         Ok(()) => {
             info!("OxideGram stopped normally");
             ExitCode::SUCCESS
@@ -39,37 +61,64 @@ async fn main() -> ExitCode {
             error!(error = %error_chain, "OxideGram stopped with an error");
             eprintln!("Error: {error_chain}");
             eprintln!(
-                "Details were written to data/logs/. Set OXIDEGRAM_LOG=debug for verbose logs."
+                "Details were written to data/logs/. Set --verbose or OXIDEGRAM_LOG=debug for verbose logs."
             );
             ExitCode::FAILURE
         }
     }
 }
 
-async fn run() -> Result<(), OxideError> {
-    use infrastructure::session_repository::OxideConfig;
-    use presentation::console::OxideConsole;
-
+async fn run(cli: Cli) -> Result<(), OxideError> {
     let console = Arc::new(OxideConsole::new());
-    console.print_header();
     let mut config = OxideConfig::default();
     config.load().await?;
 
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() > 1 && args[1] == "check" {
-        return run_check(console.as_ref(), &config).await;
+    let key_provider = Arc::new(HardwareMasterKeyProvider::new(
+        console.clone(),
+        cli.password.clone(),
+    ));
+
+    match cli.command {
+        Some(Commands::Run { bot, session }) => {
+            run_direct_bot(
+                &console,
+                &mut config,
+                key_provider.as_ref(),
+                &bot,
+                session.as_deref(),
+            )
+            .await
+        }
+        Some(Commands::Sim { bot }) => {
+            let script_path = bot.as_deref().and_then(|p| p.to_str());
+            run_simulator(console, script_path).await
+        }
+        Some(Commands::Check { bot }) => run_check(console.as_ref(), &config, bot.as_deref()).await,
+        Some(Commands::Cluster { bots }) => {
+            run_multi_cluster(console, &mut config, key_provider.as_ref(), bots).await
+        }
+        Some(Commands::Session { action }) => {
+            run_session_command(console.as_ref(), &mut config, key_provider.as_ref(), action).await
+        }
+        Some(Commands::Template { action }) => run_template_command(console.as_ref(), action).await,
+        None => run_interactive_menu(console, &mut config, key_provider.as_ref()).await,
     }
-    if args.len() > 1 && (args[1] == "test-bot" || args[1] == "sim") {
-        let script_arg = args.get(2).map(|s| s.as_str());
-        return run_simulator(console.clone(), script_arg).await;
-    }
+}
+
+async fn run_interactive_menu(
+    console: Arc<OxideConsole>,
+    config: &mut OxideConfig,
+    key_provider: &HardwareMasterKeyProvider,
+) -> Result<(), OxideError> {
+    console.print_header();
 
     let menu_options = vec![
         "1. Run Single Bot".to_string(),
         "2. Run Multi-Session Cluster".to_string(),
         "3. Test Bot in Simulator (Offline Dry-Run)".to_string(),
         "4. Create Bot Script Template".to_string(),
-        "5. Exit".to_string(),
+        "5. Manage Sessions & Device Vault".to_string(),
+        "6. Exit".to_string(),
     ];
 
     let choice = match console.ask_select("Choose action:", menu_options) {
@@ -81,13 +130,15 @@ async fn run() -> Result<(), OxideError> {
     };
 
     if choice.starts_with('1') {
-        run_single_bot(console, &mut config).await?;
+        run_single_bot(console, config, key_provider).await?;
     } else if choice.starts_with('2') {
-        run_multi_cluster(console, &mut config).await?;
+        run_multi_cluster(console, config, key_provider, None).await?;
     } else if choice.starts_with('3') {
         run_simulator(console, None).await?;
     } else if choice.starts_with('4') {
         create_template_flow(console.as_ref()).await?;
+    } else if choice.starts_with('5') {
+        run_session_menu(console.as_ref(), config, key_provider).await?;
     } else {
         console.print("Goodbye!");
     }
@@ -96,8 +147,9 @@ async fn run() -> Result<(), OxideError> {
 }
 
 async fn run_single_bot(
-    console: Arc<presentation::console::OxideConsole>,
-    config: &mut infrastructure::session_repository::OxideConfig,
+    console: Arc<OxideConsole>,
+    config: &mut OxideConfig,
+    key_provider: &HardwareMasterKeyProvider,
 ) -> Result<(), OxideError> {
     use application::authentication::LoginService;
     use infrastructure::lua::LuaBotRunner;
@@ -105,8 +157,22 @@ async fn run_single_bot(
     use infrastructure::telegram_auth::GrammersAuthGateway;
 
     let telegram = GrammersAuthGateway;
-    let mut login = LoginService::new(config, console.as_ref(), &telegram);
-    let authenticated = login.login().await?;
+    let saved_phones = config.session_phones();
+
+    let authenticated = if saved_phones.len() == 1 {
+        // Smart auto-skip: Exactly one session exists, skip prompt questions entirely!
+        let phone = saved_phones[0].clone();
+        let session = config
+            .session(&phone)
+            .ok_or_else(|| errors::AuthError::SessionNotFound(phone.clone()))?;
+        let password = key_provider.resolve_master_key().await?;
+        console.print(&format!("[auto-login] Restoring single session {phone}..."));
+        telegram.restore(&phone, &password, session).await?
+    } else {
+        let mut login =
+            LoginService::new(config, console.as_ref(), &telegram).with_key_provider(key_provider);
+        login.login().await?
+    };
 
     let loader = FileSystemScriptCatalog::default();
     let mut bots = loader.search_bots().await?;
@@ -167,11 +233,95 @@ async fn run_single_bot(
     Ok(())
 }
 
-async fn run_multi_cluster(
-    console: Arc<presentation::console::OxideConsole>,
-    config: &mut infrastructure::session_repository::OxideConfig,
+async fn run_direct_bot(
+    console: &Arc<OxideConsole>,
+    config: &mut OxideConfig,
+    key_provider: &HardwareMasterKeyProvider,
+    bot_query: &str,
+    session_arg: Option<&str>,
 ) -> Result<(), OxideError> {
-    use application::authentication::SessionRepository;
+    use infrastructure::lua::LuaBotRunner;
+    use infrastructure::script_catalog::FileSystemScriptCatalog;
+    use infrastructure::telegram_auth::GrammersAuthGateway;
+
+    let telegram = GrammersAuthGateway;
+
+    // 1. Locate the bot script
+    let bot_path = if Path::new(bot_query).exists() {
+        PathBuf::from(bot_query)
+    } else {
+        let loader = FileSystemScriptCatalog::default();
+        let bots = loader.search_bots().await?;
+        let matching = bots
+            .into_iter()
+            .find(|b| b.name.eq_ignore_ascii_case(bot_query));
+        match matching {
+            Some(b) => b.path,
+            None => {
+                console.print(&format!(
+                    "[error] Bot '{bot_query}' not found in data/bots/"
+                ));
+                return Err(
+                    errors::ScriptError::Runtime(format!("Bot '{bot_query}' not found")).into(),
+                );
+            }
+        }
+    };
+
+    // 2. Resolve the Telegram session
+    let saved_phones = config.session_phones();
+    if saved_phones.is_empty() {
+        console
+            .print("[error] No saved sessions found in configuration. Authorize an account first.");
+        return Err(errors::AuthError::SessionNotFound("None".into()).into());
+    }
+
+    let phone = if let Some(p) = session_arg {
+        p.to_string()
+    } else if saved_phones.len() == 1 {
+        saved_phones[0].clone()
+    } else {
+        match console.ask_autocomplete("Select session to bind:", saved_phones) {
+            Ok(p) => p,
+            Err(_) => return Ok(()),
+        }
+    };
+
+    let session = config
+        .session(&phone)
+        .ok_or_else(|| errors::AuthError::SessionNotFound(phone.clone()))?;
+
+    // 3. Unlock session credentials
+    let password = key_provider.resolve_master_key().await?;
+    console.print(&format!("[connecting] Restoring session {phone}..."));
+    let authenticated = telegram.restore(&phone, &password, session).await?;
+
+    let mut runner =
+        LuaBotRunner::new(authenticated.client, authenticated.updates, console.clone())?;
+    runner.load_script(&bot_path).await?;
+    console.print(&format!(
+        "[running] {} on {phone} | press Ctrl+C to stop (Hot-Reload enabled)",
+        bot_path.display()
+    ));
+
+    let run_res = runner.run_event_loop().await;
+
+    if let Some(ref password) = authenticated.session_password
+        && let Err(error) = telegram.persist_and_secure(&phone, password, config).await
+    {
+        tracing::warn!(error = %error, "Failed to persist and secure encrypted session");
+    }
+
+    run_res?;
+    Ok(())
+}
+
+async fn run_multi_cluster(
+    console: Arc<OxideConsole>,
+    config: &mut OxideConfig,
+    key_provider: &HardwareMasterKeyProvider,
+    bots_filter: Option<Vec<String>>,
+) -> Result<(), OxideError> {
     use application::authentication::SessionRestorer;
     use application::orchestration::MultiBotCluster;
     use infrastructure::lua::LuaBotRunner;
@@ -181,9 +331,6 @@ async fn run_multi_cluster(
     let saved_phones = config.session_phones();
     if saved_phones.is_empty() {
         console.print("[warning] No saved sessions found in configuration.");
-        console.print(
-            "Please run option 1 ('Run Single Bot') first to authorize at least one session.",
-        );
         return Ok(());
     }
 
@@ -194,48 +341,43 @@ async fn run_multi_cluster(
         return Ok(());
     }
 
-    console.print(&format!(
-        "[cluster setup] Found {} saved sessions and {} bot scripts.",
-        saved_phones.len(),
-        bots.len()
-    ));
+    // Resolve master key ONCE for the entire cluster run
+    let master_password = key_provider.resolve_master_key().await?;
 
     let mut runners: Vec<(String, String, LuaBotRunner)> = Vec::new();
     let mut session_passwords: Vec<(String, String)> = Vec::new();
     let telegram = GrammersAuthGateway;
 
-    for phone in &saved_phones {
-        let run_for_this = console
-            .ask_confirm(&format!("Include session {phone} in cluster?"))
-            .unwrap_or(false);
-        if !run_for_this {
-            continue;
-        }
+    for (idx, phone) in saved_phones.iter().enumerate() {
+        let bot_script = if let Some(ref filter_list) = bots_filter {
+            if let Some(bot_name) = filter_list.get(idx) {
+                bots.iter().find(|b| b.name.eq_ignore_ascii_case(bot_name))
+            } else {
+                bots.first()
+            }
+        } else {
+            let bot_names: Vec<String> = bots.iter().map(|b| b.name.clone()).collect();
+            let selected =
+                match console.ask_select(&format!("Select bot script for {phone}:"), bot_names) {
+                    Ok(name) => name,
+                    Err(_) => continue,
+                };
+            bots.iter().find(|b| b.name == selected)
+        };
 
-        let bot_names: Vec<String> = bots.iter().map(|b| b.name.clone()).collect();
-        let selected_bot_name =
-            match console.ask_select(&format!("Select bot script for {phone}:"), bot_names) {
-                Ok(name) => name,
-                Err(_) => continue,
-            };
-
-        let Some(bot_script) = bots.iter().find(|b| b.name == selected_bot_name) else {
+        let Some(bot_script) = bot_script else {
             continue;
         };
 
-        let password =
-            match console.ask_password(&format!("Enter decryption password for {phone}:")) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-
         let Some(saved_session) = config.session(phone) else {
-            console.print(&format!("[error] Session not found for {phone}"));
             continue;
         };
 
         console.print(&format!("[connecting] Restoring session {phone}..."));
-        let authenticated = match telegram.restore(phone, &password, saved_session).await {
+        let authenticated = match telegram
+            .restore(phone, &master_password, saved_session)
+            .await
+        {
             Ok(client) => client,
             Err(e) => {
                 console.print(&format!("[error] Failed to restore session {phone}: {e}"));
@@ -254,7 +396,7 @@ async fn run_multi_cluster(
             continue;
         }
 
-        session_passwords.push((phone.clone(), password));
+        session_passwords.push((phone.clone(), master_password.clone()));
         runners.push((phone.clone(), bot_script.name.clone(), runner));
     }
 
@@ -271,7 +413,7 @@ async fn run_multi_cluster(
 
     let run_res = MultiBotCluster::run_instances(runners).await;
 
-    // Securely update session state on disk
+    // Persist and secure sessions
     for (phone, password) in &session_passwords {
         if let Err(e) = telegram.persist_and_secure(phone, password, config).await {
             tracing::warn!(phone = %phone, error = %e, "Failed to persist session after cluster shutdown");
@@ -282,9 +424,137 @@ async fn run_multi_cluster(
     Ok(())
 }
 
-async fn create_template_flow(
-    console: &presentation::console::OxideConsole,
+async fn run_session_command(
+    console: &OxideConsole,
+    config: &mut OxideConfig,
+    key_provider: &HardwareMasterKeyProvider,
+    action: SessionAction,
 ) -> Result<(), OxideError> {
+    match action {
+        SessionAction::List => {
+            let phones = config.session_phones();
+            if phones.is_empty() {
+                console.print("[empty] No authorized sessions found in data/config.oxide");
+            } else {
+                console.print(&format!("Saved Authorized Sessions ({}) :", phones.len()));
+                for (i, p) in phones.iter().enumerate() {
+                    console.print(&format!("  {}. {p}", i + 1));
+                }
+            }
+        }
+        SessionAction::Add => {
+            use application::authentication::LoginService;
+            use infrastructure::telegram_auth::GrammersAuthGateway;
+
+            let telegram = GrammersAuthGateway;
+            let mut login =
+                LoginService::new(config, console, &telegram).with_key_provider(key_provider);
+            login.login().await?;
+            console.print("[success] New Telegram session successfully authorized and saved!");
+        }
+        SessionAction::Remove { phone } => {
+            if config.remove_session(&phone).await? {
+                console.print(&format!("[success] Session {phone} successfully removed."));
+            } else {
+                console.print(&format!("[warning] Session {phone} not found."));
+            }
+        }
+        SessionAction::Lock => {
+            key_provider.clear_device_key().await?;
+            console.print("[locked] Device-bound vault cleared. Master password will be requested on next launch.");
+        }
+        SessionAction::Unlock => {
+            if key_provider.has_device_key() {
+                match key_provider.resolve_master_key().await {
+                    Ok(_) => console.print(
+                        "[unlocked] Device vault unlocked successfully via hardware fingerprint!",
+                    ),
+                    Err(e) => console.print(&format!("[error] Failed to unlock device vault: {e}")),
+                }
+            } else {
+                console.print("[info] No device vault is currently enrolled. Launch OxideGram to remember your password.");
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn run_session_menu(
+    console: &OxideConsole,
+    config: &mut OxideConfig,
+    key_provider: &HardwareMasterKeyProvider,
+) -> Result<(), OxideError> {
+    let options = vec![
+        "1. List Sessions".to_string(),
+        "2. Add New Session".to_string(),
+        "3. Remove Session".to_string(),
+        "4. Lock Device Vault (Clear Saved Password)".to_string(),
+        "5. Test Device Vault Unlock".to_string(),
+        "6. Back to Main Menu".to_string(),
+    ];
+
+    let choice = match console.ask_select("Session Management:", options) {
+        Ok(c) => c,
+        Err(_) => return Ok(()),
+    };
+
+    if choice.starts_with('1') {
+        run_session_command(console, config, key_provider, SessionAction::List).await?;
+    } else if choice.starts_with('2') {
+        run_session_command(console, config, key_provider, SessionAction::Add).await?;
+    } else if choice.starts_with('3') {
+        let phones = config.session_phones();
+        if phones.is_empty() {
+            console.print("[empty] No sessions to remove.");
+            return Ok(());
+        }
+        let selected = match console.ask_select("Select session to remove:", phones) {
+            Ok(p) => p,
+            Err(_) => return Ok(()),
+        };
+        let confirm = console
+            .ask_confirm(&format!(
+                "Are you sure you want to delete session {selected}?"
+            ))
+            .unwrap_or(false);
+        if confirm {
+            run_session_command(
+                console,
+                config,
+                key_provider,
+                SessionAction::Remove { phone: selected },
+            )
+            .await?;
+        }
+    } else if choice.starts_with('4') {
+        run_session_command(console, config, key_provider, SessionAction::Lock).await?;
+    } else if choice.starts_with('5') {
+        run_session_command(console, config, key_provider, SessionAction::Unlock).await?;
+    }
+
+    Ok(())
+}
+
+async fn run_template_command(
+    console: &OxideConsole,
+    action: TemplateAction,
+) -> Result<(), OxideError> {
+    use infrastructure::script_catalog::FileSystemScriptCatalog;
+
+    match action {
+        TemplateAction::New { name, kind } => {
+            let loader = FileSystemScriptCatalog::default();
+            let path = loader.create_bot_template(&name, &kind).await?;
+            console.print(&format!(
+                "[success] Created bot script template at {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn create_template_flow(console: &OxideConsole) -> Result<(), OxideError> {
     use infrastructure::script_catalog::FileSystemScriptCatalog;
 
     let bot_name = match console.ask_text("Enter new bot script name (e.g. echo_helper):") {
@@ -340,10 +610,10 @@ async fn create_template_flow(
 }
 
 async fn run_check(
-    console: &presentation::console::OxideConsole,
-    config: &infrastructure::session_repository::OxideConfig,
+    console: &OxideConsole,
+    config: &OxideConfig,
+    specific_bot: Option<&Path>,
 ) -> Result<(), OxideError> {
-    use application::authentication::SessionRepository;
     use infrastructure::script_catalog::FileSystemScriptCatalog;
 
     console.print("[check] Starting OxideGram diagnostics...\n");
@@ -357,7 +627,18 @@ async fn run_check(
 
     // 2. Check scripts
     let loader = FileSystemScriptCatalog::default();
-    let bots = loader.search_bots().await?;
+    let bots = if let Some(target) = specific_bot {
+        vec![crate::domain::automation::BotScript {
+            name: target
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "custom".to_string()),
+            path: target.to_path_buf(),
+        }]
+    } else {
+        loader.search_bots().await?
+    };
+
     console.print(&format!(
         "[check] Bots directory: {} ({} scripts found)\n",
         loader.bots_dir.display(),
@@ -402,14 +683,14 @@ async fn run_check(
 }
 
 async fn run_simulator(
-    console: Arc<presentation::console::OxideConsole>,
+    console: Arc<OxideConsole>,
     script_path_arg: Option<&str>,
 ) -> Result<(), OxideError> {
     use infrastructure::lua::BotSimulator;
     use infrastructure::script_catalog::FileSystemScriptCatalog;
 
     let target_path = if let Some(path_str) = script_path_arg {
-        let p = std::path::PathBuf::from(path_str);
+        let p = PathBuf::from(path_str);
         if !p.exists() {
             console.print(&format!("[error] Script file not found: {}", p.display()));
             return Ok(());

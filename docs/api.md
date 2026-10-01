@@ -406,11 +406,20 @@ event.pin()
 
 #### `event.click(query_or_index[, delay])` / `event.click_button`
 
-Clicks an inline callback button or simulates pressing a reply keyboard button on this message.
+Clicks an inline callback button or simulates pressing a regular reply keyboard button on this message (or the active chat keyboard).
+
+**Supported Keyboards & Mechanisms:**
+- **Inline Keyboard (`InlineKeyboardMarkup`)**: Dispatches an MTProto `GetBotCallbackAnswer` request directly to Telegram with the button's callback data payload.
+- **Regular Reply Keyboard (`ReplyKeyboardMarkup`)**: Telegram reply keyboards function by having the user client send a text message matching the button label. OxideGram locates the matching button in the message or active chat keyboard cache and automatically sends the corresponding text message to the bot.
+- **Smart Text Fallback**: If the query is a string and no keyboard markup is detected on the current message, OxideGram sends the query text directly to the bot as a simulated button press.
+- **Fuzzy Matching**: Matches exact text, case-insensitive substring, trimmed emojis, and 1-based numeric index.
 
 ```lua
--- Find button by text label and click it
-event.click("Confirm")
+-- Find button by text label and click it (works for both Inline & Reply buttons)
+event.click("💋 или 👋")
+
+-- Click with custom humanized delay (seconds)
+event.click("Confirm", 1.5)
 
 -- Click by 1-based index (e.g. 1 = first button in keyboard)
 event.click(1)
@@ -424,15 +433,16 @@ OxideGram includes a built-in sandbox simulator to test bot scripts locally with
 
 ```bash
 # Launch interactive simulator for a bot
-cargo run -- test-bot data/bots/my_bot.lua
-# Or shorthand
-cargo run -- sim
+oxidegram sim my_bot
+
+# Or run directly via cargo
+cargo run -- sim hello
 ```
 
 ### Simulator Features
 - **Hot-Reload**: Automatically re-runs and reloads scripts upon saving changes on disk.
 - **Mock Actions**: `send_message`, `reply`, `edit`, `delete`, `react`, and `click` print visual feedback instead of contacting Telegram.
-- **Button Simulation**: Displays simulated inline button keyboards and allows triggering them with `/click`.
+- **Button Simulation**: Displays simulated inline and reply button keyboards and allows triggering them with `/click`.
 - **REPL Commands**:
   - `/click <label_or_index>`: Simulate clicking a button by text or number.
   - `/buttons`: Show the currently active buttons on the last message.

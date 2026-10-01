@@ -763,25 +763,25 @@ pub fn register_ox_table(
     let log_table = lua.create_table().map_err(ScriptError::LuaError)?;
     let log_info = lua
         .create_function(|_, msg: String| {
-            tracing::info!(target: "lua", "{msg}");
+            tracing::info!(target: "lua", "[LUA] {msg}");
             Ok(())
         })
         .map_err(ScriptError::LuaError)?;
     let log_warn = lua
         .create_function(|_, msg: String| {
-            tracing::warn!(target: "lua", "{msg}");
+            tracing::warn!(target: "lua", "[LUA] {msg}");
             Ok(())
         })
         .map_err(ScriptError::LuaError)?;
     let log_error = lua
         .create_function(|_, msg: String| {
-            tracing::error!(target: "lua", "{msg}");
+            tracing::error!(target: "lua", "[LUA] {msg}");
             Ok(())
         })
         .map_err(ScriptError::LuaError)?;
     let log_debug = lua
         .create_function(|_, msg: String| {
-            tracing::debug!(target: "lua", "{msg}");
+            tracing::debug!(target: "lua", "[LUA] {msg}");
             Ok(())
         })
         .map_err(ScriptError::LuaError)?;

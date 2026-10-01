@@ -22,6 +22,7 @@ struct FlowGlobalMatcher {
 
 /// State machine coordinator for a dialog flow.
 struct FlowCoordinator {
+    name: String,
     target_chats: Option<Vec<i64>>,
     initial_step: RwLock<Option<String>>,
     current_steps: RwLock<HashMap<i64, String>>,
@@ -54,6 +55,7 @@ pub fn register_flow_api(lua: &Lua, ox_table: &Table) -> Result<(), mlua::Error>
             }
 
             let coordinator = Arc::new(FlowCoordinator {
+                name: flow_name.clone(),
                 target_chats,
                 initial_step: RwLock::new(initial_step),
                 current_steps: RwLock::new(HashMap::new()),
@@ -316,7 +318,7 @@ pub fn register_flow_api(lua: &Lua, ox_table: &Table) -> Result<(), mlua::Error>
 
                         // Build ctx table
                         let ctx = lua.create_table()?;
-                        ctx.set("step", active_step_name)?;
+                        ctx.set("step", active_step_name.clone())?;
                         ctx.set("data", ctx_data_sub)?;
 
                         let coord_ctx = Arc::clone(&coord);
@@ -350,10 +352,11 @@ pub fn register_flow_api(lua: &Lua, ox_table: &Table) -> Result<(), mlua::Error>
                             _ => next,
                         };
 
-                        if let (Some(target), Ok(mut map)) =
-                            (transition_step, coord.current_steps.write())
-                        {
-                            map.insert(chat_id, target);
+                        if let Some(target) = transition_step {
+                            tracing::info!(target: "oxidegram", "[FLOW] [{}] Step: {} -> {}", coord.name, active_step_name, target);
+                            if let Ok(mut map) = coord.current_steps.write() {
+                                map.insert(chat_id, target);
+                            }
                         }
                     }
 

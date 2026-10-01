@@ -1,6 +1,20 @@
-//! Cryptographic adapter for persisted session payloads.
+//! Cryptographic adapter for persisted session payloads and hardware-bound vault security.
 //!
-//! Uses Argon2id for password key derivation and AES-256-GCM for authenticated encryption.
+//! Uses Argon2id for password/hardware key derivation and AES-256-GCM for authenticated encryption.
+
+pub mod device_vault;
+pub mod fingerprint;
+pub mod linux;
+pub mod provider;
+pub mod termux;
+pub mod windows;
+
+#[allow(unused_imports)]
+pub use device_vault::HardwareDeviceVault;
+#[allow(unused_imports)]
+pub use fingerprint::{FingerprintCollector, get_platform_collector, is_termux_environment};
+#[allow(unused_imports)]
+pub use provider::HardwareMasterKeyProvider;
 
 use crate::errors::{EncryptionError, OxideError};
 use aes_gcm::{

@@ -437,6 +437,14 @@ impl LuaBotRunner {
                 &match_result,
             )?;
 
+            let snippet = if text.chars().count() > 40 {
+                let s: String = text.chars().take(40).collect();
+                format!("{s}...")
+            } else {
+                text.clone()
+            };
+            info!(target: "oxidegram", "[MSG] [{chat_id}] \"{snippet}\"");
+
             debug!(chat_id, sender_id, "Running Lua message handler");
             if let Ok(func) = self.lua.registry_value::<Function>(&item.callback_key)
                 && let Err(err) = func.call_async::<()>(event_table).await
@@ -550,6 +558,13 @@ impl LuaBotRunner {
                                     .reply_to(Some(message_id));
 
                             invoke_send_message(&client, peer_ref, reply_message).await?;
+                            let snippet = if reply_text.chars().count() > 40 {
+                                let s: String = reply_text.chars().take(40).collect();
+                                format!("{s}...")
+                            } else {
+                                reply_text.clone()
+                            };
+                            info!(target: "oxidegram", "[REPLY] [{chat_id}] \"{snippet}\"");
                             Ok(())
                         }
                     },
@@ -681,6 +696,7 @@ impl LuaBotRunner {
                     };
 
                     if let Some(button) = btn {
+                        info!(target: "oxidegram", "[ACT] Clicked button: \"{}\"", button.text);
                         match &button.kind {
                             crate::domain::automation::ButtonKind::Callback(data) => {
                                 use grammers_tl_types as tl;
@@ -715,11 +731,7 @@ impl LuaBotRunner {
                             .to_str()
                             .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?
                             .to_string();
-                        warn!(
-                            chat_id,
-                            query = %text,
-                            "Button not found in active markup; falling back to sending text message"
-                        );
+                        info!(target: "oxidegram", "[ACT] Pressed reply button: \"{}\"", text);
                         let input_msg = InputMessage::new().text(text.clone());
                         invoke_send_message(&client, peer_ref, input_msg).await?;
                         Ok(text)

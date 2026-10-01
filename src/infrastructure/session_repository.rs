@@ -164,6 +164,17 @@ impl OxideConfig {
     pub fn get_session(&self, phone: &str) -> Option<SavedSession> {
         self.data.sessions.get(phone).map(SavedSession::from)
     }
+
+    /// Removes a session from the configuration and saves changes.
+    pub async fn remove_session(&mut self, phone: &str) -> Result<bool, OxideError> {
+        if self.data.sessions.remove(phone).is_some() {
+            info!(phone = %PhoneNumber::new(phone).masked(), "Session removed from configuration");
+            self.save().await?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
 }
 
 #[async_trait]

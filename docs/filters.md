@@ -5,166 +5,206 @@ title: Message Filters
 
 # Message Filters
 
-[Documentation home](index.html) | [API](api.html) | [Examples](examples.html)
+[Home](index.html) | [API](api.html) | [Examples](examples.html)
 
-Filters are passed as the first argument to `ox.on_message`:
+Filters are defined as Lua tables passed as the first argument to `ox.on_message`. They allow you to declaratively filter Telegram message updates so your callbacks only execute when all criteria match.
 
 ```lua
-ox.on_message({ incoming = true, private = true }, function(event)
-    -- Runs only for incoming private messages.
+ox.on_message({
+    incoming = true,
+    private = true,
+    has_text = true,
+}, function(event)
+    -- Executes only for incoming text messages in 1-on-1 private chats
 end)
 ```
 
-Every specified condition must match. In other words, filters use logical AND. To express OR for values of the same kind, use an array such as `chats = { 100, 200 }`. To express more complex alternatives, register multiple handlers.
+Filters use logical **AND** semantics across different keys: every specified key must match. To express logical **OR** for values of the same key (such as multiple chat IDs or command names), provide a sequential array.
 
-## Reference
+---
 
-| Filter | Accepted value | Matches when |
-| --- | --- | --- |
-| `chats` | integer or non-empty integer array | `event.chat_id` equals one of the IDs. |
-| `senders` | integer or non-empty integer array | `event.sender_id` equals one of the IDs. |
-| `incoming` | boolean | The message's incoming state equals the value. |
-| `outgoing` | boolean | The message's outgoing state equals the value. |
-| `private` | boolean | The dialog is, or is not, a private user dialog. |
-| `group` | boolean | The dialog is, or is not, a basic group. |
-| `channel` | boolean | The dialog is, or is not, a channel or supergroup. |
-| `has_text` | boolean | Message text is non-empty, or empty when set to `false`. |
-| `commands` | string or non-empty string array | Text starts with one of the slash commands. |
-| `pattern` | string | The Rust regular expression matches `event.text`. |
+## Filter Reference
 
-## Chat And Sender IDs
+| Key | Accepted Types | Description |
+| :--- | :--- | :--- |
+| `chats` | `integer` or `integer[]` | Matches when `event.chat_id` equals one of the specified peer IDs. |
+| `senders` | `integer` or `integer[]` | Matches when `event.sender_id` equals one of the specified peer IDs. |
+| `incoming` | `boolean` | Matches whether the message was sent by another account. |
+| `outgoing` | `boolean` | Matches whether the message was sent by your userbot account. |
+| `private` | `boolean` | Matches 1-on-1 private user dialogs. |
+| `group` | `boolean` | Matches basic group chats. |
+| `channel` | `boolean` | Matches broadcast channels and supergroups. |
+| `has_text` | `boolean` | Matches messages with non-empty text content (or empty if `false`). |
+| `commands` | `string` or `string[]` | Matches messages starting with one of the specified slash commands. |
+| `pattern` | `string` | Matches messages against a Rust-compatible regular expression. |
 
-Match one dialog:
+---
+
+## Chat and Sender Filters
+
+Match a single chat or user peer:
 
 ```lua
+-- Only match messages in chat ID 123456789
 { chats = 123456789 }
 ```
 
-Match any listed dialog and sender:
+Match any chat or sender from an allowed whitelist:
 
 ```lua
 {
     chats = { 123456789, 987654321 },
-    senders = { 111111111, 222222222 }
+    senders = { 111111111, 222222222 },
 }
 ```
 
-IDs are bare signed 64-bit integers as exposed in `event.chat_id` and `event.sender_id`. Log or temporarily print these event fields to discover values for your account. Do not assume IDs copied from Bot API examples have identical formatting.
+> [!NOTE]
+> Telegram peer IDs are signed 64-bit integers. Supergroups and channels in MTProto usually have negative 64-bit identifiers (e.g. `-1001234567890`). You can inspect `event.chat_id` and `event.sender_id` inside a general handler to discover IDs.
 
-## Direction
+---
+
+## Message Direction
 
 ```lua
+-- Only incoming messages (sent by others)
 { incoming = true }
+
+-- Only outgoing messages (sent by your account)
 { outgoing = true }
-```
 
-`incoming` and `outgoing` are opposites for a message. Usually specify only one. Contradictory combinations such as `{ incoming = true, outgoing = true }` never match.
-
-Boolean filters can also exclude a condition:
-
-```lua
--- Any message that is not outgoing.
+-- Inverted check: any message that is not outgoing
 { outgoing = false }
 ```
 
-## Chat Type
+> [!TIP]
+> `incoming` and `outgoing` are mutually exclusive for a given message. Do not set both to `true` on the same handler, as that condition will never match.
+
+---
+
+## Chat Types
 
 ```lua
-{ private = true }
-{ group = true }
-{ channel = true }
+{ private = true } -- 1-on-1 user chats
+{ group = true }   -- Basic group chats
+{ channel = true } -- Supergroups and broadcast channels
 ```
 
-In the current Telegram peer model:
-
-- `private` corresponds to a user peer.
-- `group` corresponds to a basic group chat peer.
-- `channel` corresponds to both broadcast channels and supergroups.
-
-To match private messages or basic groups, register two handlers or use a shared callback:
+To handle messages across both private chats and basic groups with the same logic, register two handlers sharing the same callback function:
 
 ```lua
 local function handle_dialog(event)
-    print(event.chat_id, event.text)
+    ox.log.info(string.format("Chat %d: %s", event.chat_id, event.text))
 end
 
-ox.on_message({ private = true }, handle_dialog)
-ox.on_message({ group = true }, handle_dialog)
+ox.on_message({ private = true, incoming = true }, handle_dialog)
+ox.on_message({ group = true, incoming = true }, handle_dialog)
 ```
+
+---
 
 ## Text Presence
 
 ```lua
+-- Only process messages that contain textual content
 { has_text = true }
+
+-- Only process media messages that have no text or caption
+{ has_text = false }
 ```
 
-This checks only whether `event.text` is non-empty. It does not distinguish plain text from a caption or inspect media.
+`has_text` checks whether `event.text` is non-empty. It matches both standalone text messages and media captions.
 
-## Commands
+---
+
+## Command Matching
 
 ```lua
-{ commands = "start" }
-{ commands = { "start", "help", "/about" } }
+-- Single command match
+{ commands = "help" }
+
+-- Multiple command aliases
+{ commands = { "start", "menu", "/help" } }
 ```
 
-Command names may be written with or without the leading `/`. Matching is case-insensitive and supports arguments and bot suffixes:
+Features of command filtering:
+- Leading slashes (`/`) are optional in configuration (`"start"` matches `/start`).
+- Matching is case-insensitive (`/start`, `/START`, and `/Start` all match).
+- Handles bot username suffixes automatically (`/start@my_bot` matches `"start"`).
+- Arguments after the command are preserved in `event.text` for custom parsing.
 
-- `/start`
-- `/START`
-- `/start argument`
-- `/start@my_bot argument`
+---
 
-All match `commands = "start"`. Text must begin with `/`; plain `start` does not match.
+## Regular Expressions and Named Captures
 
-## Regular Expressions and Capture Groups
-
-`pattern` uses Rust [`regex`](https://docs.rs/regex/latest/regex/) syntax and searches the message text:
+`pattern` compiles a regular expression using Rust's high-performance [`regex`](https://docs.rs/regex/latest/regex/) engine:
 
 ```lua
-{ pattern = "hello" }
-{ pattern = "(?i)^hello[!.]?$" }
-{ pattern = "^/item\\s+(?<id>[0-9]+)$" }
+-- Case-insensitive whole word search
+{ pattern = "(?i)\\balert\\b" }
+
+-- Command with structured arguments
+{ pattern = "^/ban\\s+(?<target>@\\w+)\\s+(?<reason>.+)$" }
 ```
 
-### Accessing Captured Groups
+### Accessing Capture Groups
 
-When a pattern matches, captured groups are automatically made available on the `event` object:
-- `event.matches[1]`, `event.matches[2]`: 1-based indexed positional capture groups.
-- `event.captures.name`: named capture groups defined via `(?<name>...)`.
-
-```lua
-ox.on_message({ pattern = "^/ban\\s+(?<username>@\\w+)\\s+(?<reason>.+)$" }, function(event)
-    local target = event.captures.username or event.matches[1]
-    local reason = event.captures.reason or event.matches[2]
-    event.reply(string.format("Banning %s for: %s", target, reason))
-end)
-```
-
-Remember that Lua string escaping is applied before the regular expression is parsed, so a regex backslash usually appears as `\\` in a quoted Lua string. Patterns are compiled once while loading the script. An invalid expression aborts loading with an explicit compilation error.
-
-## Combined Example
+When a pattern matches, captured groups are automatically populated on the `event` object:
+- `event.matches[1]`, `event.matches[2]`: Positional numerical capture groups (1-based index).
+- `event.captures["name"]`: Named capture groups defined via `(?<name>...)`.
 
 ```lua
 ox.on_message({
-    chats = { 123456789, 987654321 },
-    senders = 111111111,
-    incoming = true,
-    private = true,
-    has_text = true,
-    commands = { "start", "help" },
-    pattern = "^/"
+    pattern = "^/set\\s+(?<key>[a-zA-Z0-9_]+)\\s+(?<value>.+)$",
 }, function(event)
-    ox.send_message(event.chat_id, "Accepted: " .. event.text, 0)
+    local key = event.captures.key
+    local value = event.captures.value
+
+    ox.storage.set(key, value)
+    event:reply(string.format("Stored: `%s` = `%s`", key, value), {
+        parse_mode = "markdown",
+    })
 end)
 ```
 
-This handler runs only when every listed condition matches.
+> [!IMPORTANT]
+> Because backslashes in Lua string literals represent escape characters, escape regex backslashes using `\\` (e.g. `"\\d+"` or `"\\s+"`). Patterns are compiled once upon script loading. Syntax errors in regex patterns cause immediate startup validation errors with descriptive line diagnostics.
+
+---
+
+## Combined Filter Examples
+
+### Whitelisted Private Command Handler
+
+```lua
+ox.on_message({
+    incoming = true,
+    private = true,
+    senders = { 111111111, 222222222 },
+    commands = { "admin", "status" },
+}, function(event)
+    event:reply("Authorized admin command recognized.")
+end)
+```
+
+### Channel Keyword Monitor
+
+```lua
+ox.on_message({
+    incoming = true,
+    channel = true,
+    pattern = "(?i)\\b(urgent|critical|security)\\b",
+}, function(event)
+    ox.log.warn(string.format("Urgent keyword detected in channel %d: %s", event.chat_id, event.text))
+    event:react("🚨")
+end)
+```
+
+---
 
 ## Validation Rules
 
-- `chats` and `senders` must be an integer or a non-empty sequential integer array.
-- `commands` must be a string or a non-empty sequential string array.
-- Boolean filters accept only `true` or `false`.
-- `pattern` must be a valid string containing a valid Rust regular expression.
-- Lua array indexes should be sequential, starting at `1`.
-- Unknown filter keys are currently ignored. Treat misspelled names as an error in your own review because they result in a broader handler than intended.
+1. `chats` and `senders` must be signed 64-bit integers or non-empty sequential integer arrays.
+2. `commands` must be a string or a non-empty sequential string array.
+3. Boolean filters accept strictly `true` or `false`.
+4. `pattern` must be a valid regular expression string.
+5. All filter arrays must be sequential 1-based Lua tables (`ipairs` compatible).

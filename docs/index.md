@@ -1,44 +1,53 @@
 ---
 layout: default
-title: OxideGram Scripting Engine
+title: OxideGram Documentation
 ---
 
-# OxideGram Scripting Engine
+# OxideGram Documentation
 
-OxideGram is a high-performance, resilient Telegram userbot and automation engine built in Rust, powered by embedded Lua 5.4. It allows you to write declarative event handlers, simulate human interactions (including inline and reply keyboard button clicks), build dialog state machines (`ox.flow`), run multi-session clusters, and test scripts offline in a hot-reloading simulator.
+[Overview](#overview) | [Quick Start](#quick-start) | [CLI Reference](#command-line-interface) | [Session Vault](#session-vault-and-encryption) | [Logging System](#dual-layer-logging-system) | [API Reference](api.html) | [Filters](filters.html) | [Examples](examples.html)
 
-[Quick start](#quick-start) | [CLI Reference](#cli-reference) | [Hardware-Bound Vault](#hardware-bound-vault) | [Dual-Layer Tracing](#dual-layer-tracing) | [API](api.html) | [Filters](filters.html) | [Examples](examples.html)
+---
+
+## Overview
+
+OxideGram is an asynchronous, high-performance Telegram userbot engine written in Rust with an embedded Lua 5.4 scripting environment. It provides a declarative event model, human interaction simulation (including inline and reply keyboard clicks), a finite state machine dialog engine (`ox.flow`), multi-account session management with hardware-bound encryption, and an offline dry-run simulator.
 
 ---
 
 ## Quick Start
 
-Create `data/bots/hello.lua` (or use the built-in template generator `cargo run -- template create echo`):
+### 1. Create a Bot Script
+
+Create a script file in `data/bots/echo.lua` (or generate one using `oxidegram template create echo`):
 
 ```lua
-ox.on_message({ commands = "hello", incoming = true }, function(event)
-    event.reply("Hello from OxideGram userbot! 🚀", { parse_mode = "markdown" })
+ox.on_message({ commands = "echo", incoming = true }, function(event)
+    event:reply("Hello from OxideGram userbot! 🚀", {
+        parse_mode = "markdown",
+        delay = 0.5,
+    })
 end)
 ```
 
-Run OxideGram directly via the CLI:
+### 2. Launch the Engine
 
 ```bash
-# Launch a specific bot immediately
-cargo run -- run hello
+# Execute a specific bot script
+oxidegram run echo
 
-# Or test it offline in the dry-run simulator
-cargo run -- sim hello
+# Or test the script offline in the interactive simulator
+oxidegram sim echo
 
-# Or launch the interactive terminal menu
-cargo run
+# Or launch the interactive terminal selection menu
+oxidegram
 ```
 
 ---
 
-## CLI Reference
+## Command-Line Interface
 
-OxideGram features a modern, ergonomic CLI powered by `clap` v4:
+OxideGram provides a command-line interface powered by `clap` v4:
 
 ```text
 Usage: oxidegram [OPTIONS] [COMMAND]
@@ -60,98 +69,96 @@ Options:
   -V, --version                  Print version
 ```
 
-### Common Command Examples
+### Common Commands
 
-| Task | Command |
+| Purpose | Command |
 | :--- | :--- |
-| **Launch bot directly** | `oxidegram run hello` |
-| **Launch with specific phone** | `oxidegram run hello -s +1234567890` |
-| **Offline simulator** | `oxidegram sim hello` |
-| **Lint & validate scripts** | `oxidegram check` |
-| **Multi-bot cluster** | `oxidegram cluster bot1 bot2 bot3` |
-| **List saved sessions** | `oxidegram session list` |
-| **Add new session** | `oxidegram session add` |
-| **Delete session** | `oxidegram session remove +1234567890` |
-| **Check hardware vault** | `oxidegram session unlock` |
-| **Lock / clear vault** | `oxidegram session lock` |
-| **Generate template** | `oxidegram template create flow --name my_dialog` |
+| **Run bot** | `oxidegram run hello` |
+| **Run bot with specific phone** | `oxidegram run hello -s +1234567890` |
+| **Run offline simulator** | `oxidegram sim hello` |
+| **Validate all scripts** | `oxidegram check` |
+| **Launch multi-bot cluster** | `oxidegram cluster bot1 bot2 bot3` |
+| **List saved accounts** | `oxidegram session list` |
+| **Authorize new account** | `oxidegram session add` |
+| **Remove account** | `oxidegram session remove +1234567890` |
+| **Unlock hardware vault** | `oxidegram session unlock` |
+| **Lock hardware vault** | `oxidegram session lock` |
+| **Generate script template** | `oxidegram template create flow --name my_dialog` |
 
 ---
 
-## Hardware-Bound Vault (Zero Friction)
+## Session Vault and Encryption
 
-Tired of typing your master encryption password on every single launch? OxideGram features a **Hardware-Bound Device Vault** (`data/.device_vault`):
+OxideGram protects saved Telegram authorization sessions using authenticated **AES-256-GCM** encryption with **Argon2id** key derivation.
 
-- **No external OS keyring daemons required**: Works seamlessly on headless servers and mobile environments where GNOME Keyring or DBus are unavailable.
-- **Cross-Platform Host Binding**:
-  - **Windows**: MachineGuid (`HKLM\SOFTWARE\Microsoft\Cryptography`), Motherboard Serial, CPU Identifier, System Volume Serial.
-  - **Linux**: `/etc/machine-id`, CPU model/vendor, Hostname, SMBIOS DMI tables.
-  - **Android (Termux)**: `ro.build.fingerprint`, SoC Hardware, Termux sandbox UID/inode.
-- **Cryptographic Security**: Salted Argon2id key derivation combined with authenticated AES-256-GCM encryption. On Unix/Android, files are strictly protected with `chmod 0600`.
-- **Automatic Unlock**: When you run OxideGram, it automatically unlocks your saved sessions if the hardware fingerprint matches. If transferred to another device, the vault safely refuses to open and prompts for your master password.
-- **One-Session Auto-Skip**: If you only have one authorized Telegram account saved, OxideGram automatically selects it without prompting.
+To eliminate repetitive password prompts on trusted machines, OxideGram includes a **Hardware-Bound Device Vault** (`data/.device_vault`):
+
+- **Zero External Dependencies**: Operates seamlessly on headless servers and minimal containers without requiring external keyring daemons (such as DBus or GNOME Keyring).
+- **Hardware Probing**:
+  - **Windows**: MachineGuid (`HKLM\SOFTWARE\Microsoft\Cryptography`), Motherboard Serial, CPU Identifier, and System Volume Serial.
+  - **Linux**: `/etc/machine-id`, CPU model/vendor, Hostname, and SMBIOS DMI tables.
+  - **Android (Termux)**: Build fingerprint, hardware SoC name, and application sandbox UID.
+- **Automatic Session Selection**: If only one authorized Telegram account is stored, OxideGram automatically selects it on startup without extra menu prompts.
+- **Tamper Resistance**: If the session storage or vault file is copied to an unauthenticated machine, the hardware fingerprint mismatch prevents decryption and prompts for the master password.
 
 ---
 
-## Dual-Layer Tracing
+## Dual-Layer Logging System
 
-OxideGram uses a dual-layer logging system powered by `tracing` and `tracing-appender`:
+OxideGram provides a dual-layer logging architecture powered by `tracing` and `tracing-appender`:
 
-1. **Compact, Clean Console**:
-   - MTProto ping and network heartbeats are filtered out.
-   - Significant actions are formatted in single, easy-to-read lines:
+1. **Terminal Output (Console)**:
+   - High-noise MTProto ping packets and internal transport details are suppressed.
+   - User actions and critical events appear as concise single-line entries:
      - `[MSG]  [+1234567890] @target_user (ID: 987654) -> "Hello!"`
      - `[ACT]  [+1234567890] Clicked inline button "Confirm" on msg 1042`
-     - `[FLOW] [+1234567890] Transition: flow 'quiz' [question_1] -> [question_2]`
+     - `[FLOW] [+1234567890] Step transition: 'quiz' [question_1] -> [question_2]`
      - `[LUA]  [+1234567890] [INFO] Custom user script message`
-2. **Detailed File Audit Log**:
-   - Full debug traces, MTProto state events, and stack traces are non-blockingly written to `data/logs/oxidegram.log` with daily rotation.
-   - Customizable via environment variables `OXIDEGRAM_LOG` (console) and `OXIDEGRAM_FILE_LOG` (file).
+2. **File Audit Log**:
+   - Comprehensive debug traces, state transitions, and network diagnostics are written asynchronously to `data/logs/` with daily rotation.
+   - Verbosity levels can be adjusted using the `OXIDEGRAM_LOG` and `OXIDEGRAM_FILE_LOG` environment variables or `--verbose` flag.
 
 ---
 
 ## Key Features
 
-- **Live Hot-Reload**: Save changes in your `.lua` file, and OxideGram reloads the script on the fly without breaking your active MTProto connection or logging in again.
-- **Offline Dry-Run Simulator**: Test bot logic, button clicking, and step flows entirely offline with hot-reload and an interactive REPL before running on real accounts.
-- **Dialog Flow FSM Engine**: Create declarative multi-step dialogs (`ox.flow`) with automatic step timeouts, triggers, and state transitions.
-- **Persistent Storage**: Save key-value data between bot restarts effortlessly with `ox.storage`.
-- **String Helpers & Stdlib**: Built-in string methods (`str:contains`, `str:starts_with`, `str:split`, `str:trim`) and humanized delays (`ox.sleep_random`, `ox.choice`).
-- **Interactive TUI Prompts**: Ask startup configuration questions effortlessly with choice menus (`ox.select`), yes/no confirmations (`ox.confirm`), and text prompts (`ox.input`).
-- **Inline & Reply Keyboard Button Clicking**: Full support for Telegram Inline and Reply keyboards (`event.buttons`), with programmatic click simulation (`event.click("Verify")` or `event.click(1)`).
-- **Rich Message Control**: Edit messages (`event.edit`), delete (`event.delete`), send emoji reactions (`event.react`), pin (`event.pin`), and forward (`ox.forward_message`).
-- **Media & Formatting**: Send photos, documents (`ox.send_document`), audio tracks (`ox.send_audio`), and voice messages (`ox.send_voice`) with Markdown and HTML entity support.
-- **Regex Captures & Timers**: Extract regex positional (`event.matches`) and named capture groups (`event.captures`), and run background intervals or timeouts (`ox.set_interval`, `ox.set_timeout`).
-- **Anti-Spam & Humanization**: Automatic `FloodWait` backoff retry, human-like delay jitter, and typing simulation (`ox.send_typing`).
-- **Multi-Session Clustering**: Run isolated bot tasks across multiple Telegram accounts with graceful Ctrl+C shutdown.
+- **Live Hot-Reload**: Editing and saving `.lua` scripts instantly updates bot logic in memory without disconnecting active MTProto connections.
+- **Interactive Offline Simulator**: Test button clicking, regex routing, and dialog state transitions in a local terminal REPL without network connectivity.
+- **Dialog State Machine (`ox.flow`)**: Construct complex multi-step dialogs with per-step timeouts, branching conditions, and persistent state.
+- **Persistent Key-Value Storage (`ox.storage`)**: Store user preferences, counters, and session states in automatic JSON storage files (`data/storage/`).
+- **Interactive Startup Prompts**: Request runtime inputs via interactive terminal select menus (`ox.select`), yes/no confirmations (`ox.confirm`), and text prompts (`ox.input`).
+- **Keyboard Button Automation**: Comprehensive support for inline and reply keyboards (`event.buttons`), with programmatic click execution (`event:click`).
+- **Rich Message Control**: Edit messages (`event:edit`), delete (`event:delete`), apply emoji reactions (`event:react`), pin messages (`event:pin`), and forward (`ox.forward_message`).
+- **Media File Transfers**: Send photos, uncompressed files, audio tracks, and native voice notes (`ox.send_image`, `ox.send_document`, `ox.send_audio`, `ox.send_voice`).
+- **Regex Captures and Background Timers**: Extract positional (`event.matches`) and named captures (`event.captures`), and manage background intervals and timeouts (`ox.set_interval`, `ox.set_timeout`).
 
 ---
 
-## IDE Autocompletion & Type Definitions
+## IDE Integration and Types
 
-OxideGram includes comprehensive **LuaCATS** (Lua Language Server / EmmyLua) type definitions located in `types/oxidegram.d.lua`.
+OxideGram includes full **LuaCATS** (Lua Language Server / EmmyLua) type definitions located in `types/oxidegram.d.lua`.
 
-When opening the repository in **Zed** (via `.zed/settings.json`), **Visual Studio Code** (with `sumneko.lua`), or **Neovim** (via `.luarc.json` and `lua_ls`):
-- **IntelliSense on `ox.`**: Instant autocompletion with full docstrings, signatures, parameter types, and inline examples.
-- **Contextual `event` typing**: Inside `ox.on_message` callbacks or flow step actions, typing `event.` immediately suggests `event.reply`, `event.click`, `event.edit`, `event.react`, `event.chat_id`, `event.buttons`, and regex captures.
-- **Zero Diagnostics Noise**: Globals `ox`, `contains`, `starts_with`, `ends_with`, `split`, and `trim` are recognized automatically via pre-configured `.luarc.json`, `.vscode/settings.json`, and `.zed/settings.json`.
+When opening the project in **Zed** (via `.zed/settings.json`), **Visual Studio Code** (with the `sumneko.lua` extension), or **Neovim** (via `.luarc.json`):
+- **Autocomplete & Signatures**: Type `ox.` or `event:` to see all available methods, descriptions, parameter types, and inline code examples.
+- **Type Checking**: Full diagnostics for configuration tables, message options, and event properties.
+- **Zero Configuration Warnings**: Global functions (`ox`, `contains`, `starts_with`, `ends_with`, `split`, `trim`) are pre-configured in project settings.
 
 ---
 
-## Script Lifecycle
+## Execution Lifecycle
 
-1. OxideGram scans `data/bots/` for `.lua` script files.
-2. The selected script is evaluated in an isolated embedded Lua 5.4 runtime.
-3. Startup prompts (`ox.select`, `ox.confirm`, `ox.input`) configure variables before the event loop starts.
-4. Telegram updates are received non-blockingly over a background connection.
-5. Matching messages are dispatched to registered handlers along with enriched event helpers.
-6. When editing `.lua` files on disk, the filesystem watcher triggers an automatic reload without disconnecting from Telegram.
-7. The process runs until `ox.stop()` is called or the user interrupts it with `Ctrl+C`.
+1. OxideGram discovers script files located inside `data/bots/`.
+2. The selected script is evaluated in an isolated Lua 5.4 environment.
+3. Startup configuration prompts (`ox.select`, `ox.confirm`, `ox.input`) gather operational parameters if defined.
+4. Updates from Telegram are processed asynchronously over MTProto background tasks.
+5. Incoming messages matching filter criteria execute registered handler functions.
+6. When `.lua` files change on disk, the filesystem watcher automatically reloads handlers without terminating the connection.
+7. Execution terminates gracefully on `ox.stop()` or when receiving an interrupt signal (`Ctrl+C`).
 
 ---
 
 ## Next Steps
 
-- Read the [API Reference](api.html) for all available `ox` and `event` methods.
-- Read the [Filter Reference](filters.html) for accepted keys and matching behavior.
-- Explore [Complete Examples](examples.html) for button clicking, timers, and regex workflows.
+- Explore the [API Reference](api.html) for detailed signatures and method examples.
+- Review [Message Filters](filters.html) for filter conditions, chat whitelisting, and regex patterns.
+- Study [Script Examples](examples.html) for end-to-end automation recipes.

@@ -8,8 +8,7 @@ mod errors;
 mod infrastructure;
 mod presentation;
 
-use errors::OxideError;
-use std::error::Error;
+use errors::{OxideError, format_error_chain};
 use std::process::ExitCode;
 use std::sync::Arc;
 use tracing::{error, info};
@@ -60,12 +59,17 @@ async fn run() -> Result<(), OxideError> {
     if args.len() > 1 && args[1] == "check" {
         return run_check(console.as_ref(), &config).await;
     }
+    if args.len() > 1 && (args[1] == "test-bot" || args[1] == "sim") {
+        let script_arg = args.get(2).map(|s| s.as_str());
+        return run_simulator(console.clone(), script_arg).await;
+    }
 
     let menu_options = vec![
         "1. Run Single Bot".to_string(),
         "2. Run Multi-Session Cluster".to_string(),
-        "3. Create Bot Script Template".to_string(),
-        "4. Exit".to_string(),
+        "3. Test Bot in Simulator (Offline Dry-Run)".to_string(),
+        "4. Create Bot Script Template".to_string(),
+        "5. Exit".to_string(),
     ];
 
     let choice = match console.ask_select("Choose action:", menu_options) {
@@ -81,6 +85,8 @@ async fn run() -> Result<(), OxideError> {
     } else if choice.starts_with('2') {
         run_multi_cluster(console, &mut config).await?;
     } else if choice.starts_with('3') {
+        run_simulator(console, None).await?;
+    } else if choice.starts_with('4') {
         create_template_flow(console.as_ref()).await?;
     } else {
         console.print("Goodbye!");
@@ -94,7 +100,7 @@ async fn run_single_bot(
     config: &mut infrastructure::session_repository::OxideConfig,
 ) -> Result<(), OxideError> {
     use application::authentication::LoginService;
-    use infrastructure::lua_runtime::LuaBotRunner;
+    use infrastructure::lua::LuaBotRunner;
     use infrastructure::script_catalog::FileSystemScriptCatalog;
     use infrastructure::telegram_auth::GrammersAuthGateway;
 
@@ -168,7 +174,7 @@ async fn run_multi_cluster(
     use application::authentication::SessionRepository;
     use application::authentication::SessionRestorer;
     use application::orchestration::MultiBotCluster;
-    use infrastructure::lua_runtime::LuaBotRunner;
+    use infrastructure::lua::LuaBotRunner;
     use infrastructure::script_catalog::FileSystemScriptCatalog;
     use infrastructure::telegram_auth::GrammersAuthGateway;
 
@@ -293,6 +299,7 @@ async fn create_template_flow(
         "1. echo - Basic start/ping commands & text echo".to_string(),
         "2. buttons - Interactive buttons parsing & click simulator".to_string(),
         "3. full - Full showcase (Regex captures, timers, rich text, flood protection)".to_string(),
+        "4. flow - Step-by-step Dialog Flow (FSM), string methods & ox.storage".to_string(),
     ];
 
     let choice = match console.ask_select("Select template architecture:", template_choices) {
@@ -307,6 +314,8 @@ async fn create_template_flow(
         "buttons"
     } else if choice.starts_with('3') {
         "full"
+    } else if choice.starts_with('4') {
+        "flow"
     } else {
         "echo"
     };
@@ -392,16 +401,43 @@ async fn run_check(
     }
 }
 
-fn format_error_chain(error: &(dyn Error + 'static)) -> String {
-    let mut message = error.to_string();
-    let mut source = error.source();
-    while let Some(error) = source {
-        let detail = error.to_string();
-        if !message.contains(&detail) {
-            message.push_str(": ");
-            message.push_str(&detail);
+async fn run_simulator(
+    console: Arc<presentation::console::OxideConsole>,
+    script_path_arg: Option<&str>,
+) -> Result<(), OxideError> {
+    use infrastructure::lua::BotSimulator;
+    use infrastructure::script_catalog::FileSystemScriptCatalog;
+
+    let target_path = if let Some(path_str) = script_path_arg {
+        let p = std::path::PathBuf::from(path_str);
+        if !p.exists() {
+            console.print(&format!("[error] Script file not found: {}", p.display()));
+            return Ok(());
         }
-        source = error.source();
-    }
-    message
+        p
+    } else {
+        let loader = FileSystemScriptCatalog::default();
+        let bots = loader.search_bots().await?;
+        if bots.is_empty() {
+            console.print("[empty] No bot scripts found in data/bots/ to simulate.");
+            return Ok(());
+        }
+
+        let names: Vec<String> = bots.iter().map(|b| b.name.clone()).collect();
+        let selected_name = match console.ask_select("Select a bot script to simulate:", names) {
+            Ok(n) => n,
+            Err(_) => return Ok(()),
+        };
+
+        let Some(bot) = bots.into_iter().find(|b| b.name == selected_name) else {
+            return Ok(());
+        };
+        bot.path
+    };
+
+    let mut sim = BotSimulator::new(&target_path, console.clone()).await?;
+    sim.load_script().await?;
+    sim.run_loop().await?;
+
+    Ok(())
 }

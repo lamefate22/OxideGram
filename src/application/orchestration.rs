@@ -1,21 +1,43 @@
 //! Orchestration module managing multi-session and multi-bot cluster execution.
 
-use crate::errors::OxideError;
-use crate::infrastructure::lua_runtime::LuaBotRunner;
-use std::path::PathBuf;
+use crate::errors::{OxideError, format_error_chain};
+use crate::infrastructure::lua::LuaBotRunner;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
-/// Configuration specification for a bot instance running in the cluster.
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct BotInstanceConfig {
+/// Specification for an initialized bot instance running in the cluster.
+pub struct BotInstance {
     /// Phone number identifying the Telegram account session.
     pub session_phone: String,
     /// Human-readable bot name.
     pub bot_name: String,
-    /// Path to the `.lua` bot script.
-    pub script_path: PathBuf,
+    /// Initialized Lua runtime runner.
+    pub runner: LuaBotRunner,
+}
+
+impl BotInstance {
+    #[allow(dead_code)]
+    pub fn new(
+        session_phone: impl Into<String>,
+        bot_name: impl Into<String>,
+        runner: LuaBotRunner,
+    ) -> Self {
+        Self {
+            session_phone: session_phone.into(),
+            bot_name: bot_name.into(),
+            runner,
+        }
+    }
+}
+
+impl From<(String, String, LuaBotRunner)> for BotInstance {
+    fn from((session_phone, bot_name, runner): (String, String, LuaBotRunner)) -> Self {
+        Self {
+            session_phone,
+            bot_name,
+            runner,
+        }
+    }
 }
 
 /// Cluster coordinator managing concurrent execution of multiple bot scripts across multiple sessions.
@@ -34,15 +56,18 @@ impl MultiBotCluster {
     /// Each bot runs in an isolated `tokio::spawn` task.
     /// If one bot fails or encounters an error, other instances continue operating.
     /// Pressing Ctrl+C initiates a graceful shutdown across all active sessions.
-    pub async fn run_instances(
-        runners: Vec<(String, String, LuaBotRunner)>,
-    ) -> Result<(), OxideError> {
-        let total = runners.len();
+    pub async fn run_instances<I: Into<BotInstance>>(runners: Vec<I>) -> Result<(), OxideError> {
+        let instances: Vec<BotInstance> = runners.into_iter().map(Into::into).collect();
+        let total = instances.len();
         info!(total, "Starting multi-session bot cluster instances");
 
         let mut tasks: Vec<ClusterTask> = Vec::new();
 
-        for (phone, bot_name, mut runner) in runners {
+        for instance in instances {
+            let phone = instance.session_phone;
+            let bot_name = instance.bot_name;
+            let mut runner = instance.runner;
+
             let handle = tokio::spawn(async move {
                 runner
                     .run_event_loop()
@@ -85,18 +110,4 @@ impl MultiBotCluster {
         info!("All multi-session bot cluster instances stopped");
         Ok(())
     }
-}
-
-fn format_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
-    let mut message = error.to_string();
-    let mut source = error.source();
-    while let Some(err) = source {
-        let detail = err.to_string();
-        if !message.contains(&detail) {
-            message.push_str(": ");
-            message.push_str(&detail);
-        }
-        source = err.source();
-    }
-    message
 }

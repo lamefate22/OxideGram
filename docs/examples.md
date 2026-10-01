@@ -141,3 +141,64 @@ end)
    Lua script hot-reloaded successfully
    ```
 6. The bot is immediately running the updated code without restarting or logging into Telegram again!
+
+---
+
+## 8. Multi-Step Dialog Flow with Persistent Storage
+
+Demonstrates stateful dialogs with `ox.flow`, `ox.storage`, and string helpers:
+
+```lua
+-- OxideGram Bot: Interactive Dating / Questionnaire Bot
+local TARGET_CHAT = 123456789
+
+-- Track session stats across bot restarts
+local sessions = ox.storage.get("total_sessions", 0) + 1
+ox.storage.set("total_sessions", sessions)
+ox.log.info("Total sessions so far: " .. sessions)
+
+local dialog = ox.flow("dating_flow", {
+    target_chat = TARGET_CHAT,
+    timeout = 30, -- 30s per step before reset
+})
+
+dialog.data.score = 0
+
+-- Step 1: Wait for greeting or menu
+dialog:step("start", {
+    match = "Меню:",
+    action = function(event, ctx)
+        if event.text:contains("💋") then
+            event.click("💋 или 👋")
+            return "rating"
+        end
+    end
+})
+
+-- Step 2: Rating or reply
+dialog:step("rating", {
+    match = "💋 или 👋",
+    action = function(event, ctx)
+        ctx.data.score = ctx.data.score + 1
+        event.click("💌 Сообщение")
+        return "send_text"
+    end
+})
+
+-- Step 3: Send message text
+dialog:step("send_text", {
+    match = "✍️",
+    action = function(event, ctx)
+        local compliments = { "Привет! Отличный день!", "Привет! Как настроение?" }
+        ox.send_message(event.chat_id, ox.choice(compliments), 1.0)
+        return "start"
+    end
+})
+
+-- Global stop command
+dialog:on_match("стоп", function(event)
+    ox.log.info("Received stop request")
+    ox.stop()
+end)
+```
+

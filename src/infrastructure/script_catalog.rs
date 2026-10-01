@@ -122,6 +122,7 @@ impl FileSystemScriptCatalog {
         let content = match template_kind {
             "buttons" => TEMPLATE_BUTTONS,
             "full" => TEMPLATE_FULL,
+            "flow" => TEMPLATE_FLOW,
             _ => TEMPLATE_ECHO,
         };
 
@@ -234,6 +235,60 @@ ox.on_message({ commands = { "count" }, outgoing = true }, function(event)
 end)
 "#;
 
+const TEMPLATE_FLOW: &str = r#"-- OxideGram Bot: Dialog Flow & State Machine Template
+-- Demonstrates ox.flow, ox.storage, and string methods.
+-- Test offline: cargo run -- test-bot <path_to_this_file>
+
+local TARGET_CHAT = 6015596466 -- Replace with your target chat ID or nil
+
+-- Load persistent counter from ox.storage
+local session_count = ox.storage.get("session_count", 0) + 1
+ox.storage.set("session_count", session_count)
+
+-- Create a dialog flow (FSM)
+local dialog = ox.flow("dating_bot", {
+    target_chat = TARGET_CHAT,
+    timeout = 45, -- step timeout in seconds
+})
+
+-- Initialize custom data in flow
+dialog.data.grade = "💋Поцелуй"
+dialog.data.message = "Привет! Как твои дела?"
+
+-- Step 1: Wait for menu prompt
+dialog:step("menu", {
+    match = "Меню:",
+    action = function(event, ctx)
+        -- String methods like event.text:contains(...) are available on all strings
+        event.click("💋 или 👋", 1)
+        return "card"
+    end
+})
+
+-- Step 2: Rate or text message
+dialog:step("card", {
+    match = "💋 или 👋",
+    action = function(event, ctx)
+        event.click("💌 Сообщение")
+        return "input_text"
+    end
+})
+
+-- Step 3: Send message
+dialog:step("input_text", {
+    match = "✍️Введите",
+    action = function(event, ctx)
+        ox.send_message(event.chat_id, ctx.data.message, 1.0)
+        return "menu"
+    end
+})
+
+-- Global matchers (e.g. stop triggers)
+dialog:on_match("На сегодня много поцелуйчиков", function(event)
+    ox.stop()
+end)
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,6 +373,14 @@ mod tests {
         let full_content = std::fs::read_to_string(&full_path).unwrap();
         assert!(full_content.contains("Showcase"));
 
+        let flow_path = catalog
+            .create_bot_template("my_flow", "flow")
+            .await
+            .unwrap();
+        assert!(flow_path.exists());
+        let flow_content = std::fs::read_to_string(&flow_path).unwrap();
+        assert!(flow_content.contains("ox.flow"));
+
         // Duplicate creation must fail
         assert!(
             catalog
@@ -327,6 +390,6 @@ mod tests {
         );
 
         let bots = catalog.search_bots().await.unwrap();
-        assert_eq!(bots.len(), 3);
+        assert_eq!(bots.len(), 4);
     }
 }

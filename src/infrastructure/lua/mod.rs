@@ -3,11 +3,16 @@
 pub mod api;
 pub mod buttons;
 pub mod filters;
+pub mod flow;
 pub mod runner;
+pub mod simulator;
+pub mod stdlib;
+pub mod storage;
 
 #[allow(unused_imports)]
 pub use api::RegisteredHandler;
 pub use runner::LuaBotRunner;
+pub use simulator::BotSimulator;
 
 #[cfg(test)]
 mod tests {

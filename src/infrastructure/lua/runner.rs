@@ -86,6 +86,14 @@ impl LuaBotRunner {
                 source,
             })?;
 
+        let script_stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("default");
+        let storage =
+            crate::infrastructure::lua::storage::BotStorage::open("data/storage", script_stem)
+                .await;
+
         register_ox_table(
             &self.lua,
             self.client.clone(),
@@ -94,6 +102,7 @@ impl LuaBotRunner {
             Arc::clone(&self.console),
             self.stop_tx.clone(),
             Arc::clone(&self.timer_hub),
+            storage,
         )?;
 
         self.lua
@@ -130,6 +139,14 @@ impl LuaBotRunner {
         // Fresh Lua state
         self.lua = Lua::new();
 
+        let script_stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("default");
+        let storage =
+            crate::infrastructure::lua::storage::BotStorage::open("data/storage", script_stem)
+                .await;
+
         register_ox_table(
             &self.lua,
             self.client.clone(),
@@ -138,6 +155,7 @@ impl LuaBotRunner {
             Arc::clone(&self.console),
             self.stop_tx.clone(),
             Arc::clone(&self.timer_hub),
+            storage,
         )?;
 
         self.lua

@@ -264,6 +264,7 @@ pub fn create_stop_function(lua: &Lua, stop_tx: watch::Sender<bool>) -> mlua::Re
 }
 
 /// Builds and registers the `ox` global table in the given Lua state.
+#[allow(clippy::too_many_arguments)]
 pub fn register_ox_table(
     lua: &Lua,
     client: Client,
@@ -272,8 +273,20 @@ pub fn register_ox_table(
     console: Arc<dyn BotConsole>,
     stop_tx: watch::Sender<bool>,
     timer_hub: Arc<TimerHub>,
+    storage: crate::infrastructure::lua::storage::BotStorage,
 ) -> Result<(), ScriptError> {
     let ox_table = lua.create_table().map_err(ScriptError::LuaError)?;
+
+    // Register string extensions and global string helpers
+    crate::infrastructure::lua::stdlib::register_stdlib(lua).map_err(ScriptError::LuaError)?;
+
+    // Register randomization utilities
+    crate::infrastructure::lua::stdlib::register_random_helpers(lua, &ox_table)
+        .map_err(ScriptError::LuaError)?;
+
+    // Register persistent key-value storage
+    crate::infrastructure::lua::storage::register_storage_api(lua, &ox_table, storage)
+        .map_err(ScriptError::LuaError)?;
 
     // ox.send_message(chat_id, text, [options_or_delay], [extra_delay])
     let client_clone = client.clone();
@@ -842,6 +855,10 @@ pub fn register_ox_table(
 
     ox_table
         .set("on_message", register_handler_fn)
+        .map_err(ScriptError::LuaError)?;
+
+    // Register FSM dialog flow constructor
+    crate::infrastructure::lua::flow::register_flow_api(lua, &ox_table)
         .map_err(ScriptError::LuaError)?;
 
     let globals = lua.globals();

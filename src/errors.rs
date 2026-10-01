@@ -103,3 +103,18 @@ pub enum OxideError {
     #[error(transparent)]
     FileSystem(#[from] FileSystemError),
 }
+
+/// Formats an error and its causal chain of sources into a single readable string.
+pub fn format_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(err) = source {
+        let detail = err.to_string();
+        if !message.contains(&detail) {
+            message.push_str(": ");
+            message.push_str(&detail);
+        }
+        source = err.source();
+    }
+    message
+}

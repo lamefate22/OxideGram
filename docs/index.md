@@ -28,11 +28,16 @@ cargo run
 In the interactive menu, you can:
 1. **Run Single Bot**: authorize or choose a session and launch your script.
 2. **Run Multi-Session Cluster**: run multiple bots across multiple Telegram accounts concurrently.
-3. **Create Bot Script Template**: instantly scaffold ready-to-run bots (`echo`, `buttons`, `full`).
+3. **Test Bot in Simulator (Offline Dry-Run)**: test bots locally without connecting to Telegram (`cargo run -- test-bot <file.lua>`).
+4. **Create Bot Script Template**: instantly scaffold ready-to-run bots (`echo`, `buttons`, `flow`, `full`).
 
 ## Key Features
 
 - **Live Hot-Reload**: Save changes in your `.lua` file, and OxideGram reloads the script on the fly without breaking your active MTProto connection or logging in again.
+- **Offline Dry-Run Simulator**: Test bot logic, button clicking, and step flows entirely offline with hot-reload and an interactive REPL before running on real accounts.
+- **Dialog Flow FSM Engine**: Create declarative multi-step dialogs (`ox.flow`) with automatic step timeouts, triggers, and state transitions.
+- **Persistent Storage**: Save key-value data between bot restarts effortlessly with `ox.storage`.
+- **String Helpers & Stdlib**: Built-in string methods (`str:contains`, `str:starts_with`, `str:split`, `str:trim`) and humanized delays (`ox.sleep_random`, `ox.choice`).
 - **Button Markup & Click Simulation**: Full support for Telegram Inline and Reply keyboards (`event.buttons`), with programmatic click simulation via MTProto `GetBotCallbackAnswer` (`event.click("Verify")`).
 - **Rich Message Control**: Edit messages (`event.edit`), delete (`event.delete`), send emoji reactions (`event.react`), pin (`event.pin`), and forward (`ox.forward_message`).
 - **Media & Formatting**: Send photos, documents (`ox.send_document`), audio tracks (`ox.send_audio`), and voice messages (`ox.send_voice`) with Markdown and HTML entity support.

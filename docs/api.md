@@ -222,6 +222,105 @@ ox.log.warn("Rate limit approached")
 
 ---
 
+### Standard Library & String Extensions
+
+All Lua strings have extended metatable methods for easy pattern-free text operations:
+
+- `str:contains(substring) -> boolean`: Checks if substring is present.
+- `str:starts_with(prefix) -> boolean`: Checks if string starts with prefix.
+- `str:ends_with(suffix) -> boolean`: Checks if string ends with suffix.
+- `str:split([delimiter]) -> table`: Splits string into an array (default delimiter: `" "`).
+- `str:trim() -> string`: Trims whitespace from both ends.
+- `str:to_lower() -> string`: Converts to lowercase.
+- `str:to_upper() -> string`: Converts to uppercase.
+
+These are also available as global functions: `contains(str, sub)`, `starts_with(str, prefix)`, `ends_with(str, suffix)`, `split(str, sep)`, `trim(str)`.
+
+```lua
+if event.text:contains("💋 или 👋") then
+    event.click("💌 Сообщение")
+end
+```
+
+#### Random & Delay Helpers
+
+- `ox.sleep_random(min_seconds, max_seconds)`: Asynchronously pauses execution for a random duration with humanized timing.
+- `ox.choice(array_table) -> any`: Returns a uniformly random element from a Lua array.
+- `ox.random_int(min, max) -> integer`: Returns a random integer in `[min, max]`.
+
+```lua
+local greetings = { "Hello!", "Hi there!", "Hey!" }
+local msg = ox.choice(greetings)
+ox.sleep_random(1.0, 3.5)
+event.reply(msg)
+```
+
+---
+
+### Persistent Storage (`ox.storage`)
+
+Key-value JSON storage saved to `data/storage/<bot_name>.json`. Automatically reloaded on bot restart.
+
+- `ox.storage.get(key[, default]) -> any`: Retrieves a stored value or default if not found.
+- `ox.storage.set(key, value)`: Stores a value (string, number, boolean, or table).
+- `ox.storage.has(key) -> boolean`: Checks if a key exists in storage.
+- `ox.storage.delete(key) -> boolean`: Removes a key.
+- `ox.storage.all() -> table`: Returns all stored key-value pairs as a table.
+- `ox.storage.clear()`: Deletes all stored data for this bot.
+
+```lua
+local counter = ox.storage.get("processed_users", 0) + 1
+ox.storage.set("processed_users", counter)
+ox.log.info("Total users processed: " .. counter)
+```
+
+---
+
+### Dialog Flow & FSM (`ox.flow`)
+
+Build declarative, step-by-step state machines for complex multi-turn dialogs.
+
+#### `ox.flow(name[, options]) -> Flow`
+
+Options table:
+- `target_chat` (integer, optional): Restricts the flow to a specific chat ID.
+- `timeout` (number, optional): Max seconds before current step expires and resets.
+
+#### Flow Methods
+
+- `flow:step(name, config)`: Defines a named step with matching criteria and handler action:
+  - `config.match`: String or table of strings to match incoming message text.
+  - `config.commands`: Command or table of commands (e.g. `{"start"}`).
+  - `config.pattern`: Regex pattern.
+  - `config.action(event, ctx)`: Handler function. Can return the name of the next step (string) to transition, or `nil` to stay in current step.
+- `flow:go_to(step_name)`: Manually switch to another step.
+- `flow:reset()`: Reset flow to initial/idle state.
+- `flow:on_match(pattern_or_table, action)`: Global trigger matching regardless of current step (e.g. stop keywords).
+- `flow.data`: Shared context table (`ctx.data`) preserved across step transitions.
+
+```lua
+local dialog = ox.flow("rating_bot", { timeout = 60 })
+dialog.data.score = 5
+
+dialog:step("menu", {
+    match = "Меню:",
+    action = function(event, ctx)
+        event.click("💋 или 👋")
+        return "rate"
+    end
+})
+
+dialog:step("rate", {
+    match = "💋 или 👋",
+    action = function(event, ctx)
+        event.reply("Rating: " .. ctx.data.score)
+        return "menu"
+    end
+})
+```
+
+---
+
 ### Process Control & Configuration
 
 #### `ox.stop()`
@@ -316,3 +415,29 @@ event.click("Confirm")
 -- Click by 1-based index (e.g. 1 = first button in keyboard)
 event.click(1)
 ```
+
+---
+
+## Offline Dry-Run Simulator
+
+OxideGram includes a built-in sandbox simulator to test bot scripts locally without authorizing or connecting to Telegram:
+
+```bash
+# Launch interactive simulator for a bot
+cargo run -- test-bot data/bots/my_bot.lua
+# Or shorthand
+cargo run -- sim
+```
+
+### Simulator Features
+- **Hot-Reload**: Automatically re-runs and reloads scripts upon saving changes on disk.
+- **Mock Actions**: `send_message`, `reply`, `edit`, `delete`, `react`, and `click` print visual feedback instead of contacting Telegram.
+- **Button Simulation**: Displays simulated inline button keyboards and allows triggering them with `/click`.
+- **REPL Commands**:
+  - `/click <label_or_index>`: Simulate clicking a button by text or number.
+  - `/buttons`: Show the currently active buttons on the last message.
+  - `/chat <id>`: Switch current target chat ID.
+  - `/state`: Inspect active handlers and persistent `ox.storage` state.
+  - `/help`: Show command cheat sheet.
+  - `/exit` or `exit`: Quit the simulator.
+

@@ -1,13 +1,14 @@
-//! Message filter parsing from Lua tables into domain MessageFilter models.
-
 use crate::domain::automation::MessageFilter;
+use crate::domain::types::{ChatId, SenderId};
 use mlua::{Table, Value};
 
 /// Converts Lua filter values into the domain filter model.
 pub fn parse_message_filter(table: &Table) -> Result<MessageFilter, mlua::Error> {
     let mut filter = MessageFilter {
-        chats: parse_integer_list(table, "chats")?,
-        senders: parse_integer_list(table, "senders")?,
+        chats: parse_integer_list(table, "chats")?
+            .map(|list| list.into_iter().map(ChatId::new).collect()),
+        senders: parse_integer_list(table, "senders")?
+            .map(|list| list.into_iter().map(SenderId::new).collect()),
         incoming: parse_boolean(table, "incoming")?,
         outgoing: parse_boolean(table, "outgoing")?,
         private: parse_boolean(table, "private")?,
@@ -119,15 +120,15 @@ mod tests {
 
         assert!(filter.matches(&MessageContext {
             text: "/start payload",
-            chat_id: 100,
-            sender_id: 42,
+            chat_id: ChatId::new(100),
+            sender_id: SenderId::new(42),
             incoming: true,
             chat_type: ChatType::Private,
         }));
         assert!(!filter.matches(&MessageContext {
             text: "/start payload",
-            chat_id: 300,
-            sender_id: 42,
+            chat_id: ChatId::new(300),
+            sender_id: SenderId::new(42),
             incoming: true,
             chat_type: ChatType::Private,
         }));

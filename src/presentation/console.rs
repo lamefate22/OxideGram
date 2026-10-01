@@ -184,3 +184,47 @@ impl BotConsole for OxideConsole {
             .map_err(|error| format!("Failed to get bot configuration input: {error}"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_autocomplete_empty_input_returns_all() {
+        let mut ac = ChoiceAutocomplete {
+            choices: vec!["apple".into(), "banana".into(), "cherry".into()],
+        };
+        let suggestions = ac.get_suggestions("").unwrap();
+        assert_eq!(suggestions, vec!["apple", "banana", "cherry"]);
+    }
+
+    #[test]
+    fn test_autocomplete_case_insensitive_matching() {
+        let mut ac = ChoiceAutocomplete {
+            choices: vec!["OxideBot".into(), "RustGram".into(), "TelegramProxy".into()],
+        };
+        let suggestions = ac.get_suggestions("oxide").unwrap();
+        assert_eq!(suggestions, vec!["OxideBot"]);
+
+        let suggestions_gram = ac.get_suggestions("GRAM").unwrap();
+        assert_eq!(suggestions_gram, vec!["RustGram", "TelegramProxy"]);
+    }
+
+    #[test]
+    fn test_autocomplete_no_matches_returns_empty() {
+        let mut ac = ChoiceAutocomplete {
+            choices: vec!["alpha".into(), "beta".into()],
+        };
+        let suggestions = ac.get_suggestions("gamma").unwrap();
+        assert!(suggestions.is_empty());
+    }
+
+    #[test]
+    fn test_autocomplete_get_completion() {
+        let mut ac = ChoiceAutocomplete {
+            choices: vec!["alpha".into()],
+        };
+        let completion = ac.get_completion("al", Some("alpha".into())).unwrap();
+        assert_eq!(completion, Some("alpha".into()));
+    }
+}

@@ -27,6 +27,8 @@ pub enum AuthError {
     UiError(String),
     #[error("Telegram session storage error: {0}")]
     SessionStorage(String),
+    #[error("Operation timed out: {0}")]
+    Timeout(String),
 }
 
 /// Error types related to cryptographic operations (Argon2id and AES-256-GCM).
@@ -70,6 +72,10 @@ pub enum ScriptError {
     },
     #[error("Failed to initialize Telegram update stream: {0}")]
     UpdateStream(String),
+    #[error("Operation timed out: {0}")]
+    Timeout(String),
+    #[error("Script runtime error: {0}")]
+    Runtime(String),
 }
 
 /// Error types related to filesystem operations.

@@ -3,9 +3,11 @@
 use crate::application::authentication::{
     ConnectedSession, InteractiveAuthenticator, SessionRepository, SessionRestorer, SignInStatus,
 };
+use crate::domain::PhoneNumber;
 use crate::domain::identity::SavedSession;
 use crate::errors::{AuthError, OxideError};
 use crate::infrastructure::crypto;
+use crate::infrastructure::{IO_TIMEOUT, NETWORK_TIMEOUT};
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -50,15 +52,20 @@ impl GrammersAuthGateway {
     ) -> Result<(), OxideError> {
         let path = session_path(phone);
         if path.exists() {
-            let bytes = tokio::fs::read(&path)
+            let bytes = tokio::time::timeout(IO_TIMEOUT, tokio::fs::read(&path))
                 .await
+                .map_err(|_| AuthError::Timeout("Read SQLite session file".to_string()))?
                 .map_err(|error| AuthError::SessionStorage(error.to_string()))?;
             let salt = crypto::generate_salt()?;
-            let encrypted = crypto::encrypt_string(password, &salt, &hex::encode(bytes))?;
+            let encrypted =
+                crypto::encrypt_string_async(password, &salt, &hex::encode(bytes)).await?;
 
             let (api_id, api_hash) = match repository.session(phone) {
                 Some(existing) => (existing.api_id, existing.api_hash),
-                None => (0, String::new()),
+                None => (
+                    crate::domain::ApiId::new(0),
+                    crate::domain::ApiHash::new(""),
+                ),
             };
 
             let updated_session = SavedSession {
@@ -71,15 +78,15 @@ impl GrammersAuthGateway {
             repository
                 .save_session(phone.to_string(), updated_session)
                 .await?;
-            info!(phone, "Persisted and re-encrypted session to repository");
+            info!(phone = %PhoneNumber::new(phone).masked(), "Persisted and re-encrypted session to repository");
 
             // Clean up plaintext SQLite file and temporary WAL/SHM files
-            let _ = tokio::fs::remove_file(&path).await;
+            let _ = tokio::time::timeout(IO_TIMEOUT, tokio::fs::remove_file(&path)).await;
             let shm = path.with_extension("session-shm");
-            let _ = tokio::fs::remove_file(shm).await;
+            let _ = tokio::time::timeout(IO_TIMEOUT, tokio::fs::remove_file(shm)).await;
             let wal = path.with_extension("session-wal");
-            let _ = tokio::fs::remove_file(wal).await;
-            info!(phone, "Cleaned up plaintext temporary session files");
+            let _ = tokio::time::timeout(IO_TIMEOUT, tokio::fs::remove_file(wal)).await;
+            info!(phone = %PhoneNumber::new(phone).masked(), "Cleaned up plaintext temporary session files");
         }
         Ok(())
     }
@@ -89,8 +96,9 @@ async fn connect_session(
     path: &Path,
     api_id: i32,
 ) -> Result<(Client, mpsc::Receiver<UpdatesLike>), OxideError> {
-    let session = SqliteSession::open(path)
+    let session = tokio::time::timeout(IO_TIMEOUT, SqliteSession::open(path))
         .await
+        .map_err(|_| AuthError::Timeout("Open SQLite session".to_string()))?
         .map_err(|error| AuthError::SessionStorage(error.to_string()))?;
     let SenderPool {
         runner,
@@ -103,7 +111,7 @@ async fn connect_session(
 }
 
 fn session_path(phone: &str) -> PathBuf {
-    let clean_phone = phone.replace('+', "").trim().to_string();
+    let clean_phone = PhoneNumber::new(phone).clean_digits();
     PathBuf::from("data")
         .join("sessions")
         .join(format!("{clean_phone}.session"))
@@ -121,28 +129,31 @@ impl SessionRestorer for GrammersAuthGateway {
         password: &str,
         session: SavedSession,
     ) -> Result<Self::Connected, OxideError> {
-        info!(phone, "Starting saved-session login");
+        info!(phone = %PhoneNumber::new(phone).masked(), "Starting saved-session login");
         let salt: [u8; 16] = URL_SAFE_NO_PAD
             .decode(&session.salt)
             .map_err(|error| AuthError::DecryptionFailed(error.to_string()))?
             .try_into()
             .map_err(|_| AuthError::DecryptionFailed("Invalid salt length".to_string()))?;
-        let session_hex = crypto::decrypt_string(password, &salt, &session.session_string)
+        let session_hex = crypto::decrypt_string_async(password, &salt, &session.session_string)
+            .await
             .map_err(|error| AuthError::DecryptionFailed(error.to_string()))?;
         let bytes = hex::decode(session_hex)
             .map_err(|error| AuthError::DecryptionFailed(error.to_string()))?;
 
         let path = session_path(phone);
         if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
+            tokio::time::timeout(IO_TIMEOUT, tokio::fs::create_dir_all(parent))
                 .await
+                .map_err(|_| AuthError::Timeout("Create session directory".to_string()))?
                 .map_err(|error| AuthError::SessionStorage(error.to_string()))?;
         }
-        tokio::fs::write(&path, bytes)
+        tokio::time::timeout(IO_TIMEOUT, tokio::fs::write(&path, bytes))
             .await
+            .map_err(|_| AuthError::Timeout("Write session file".to_string()))?
             .map_err(|error| AuthError::SessionStorage(error.to_string()))?;
-        let (client, updates) = connect_session(&path, session.api_id).await?;
-        info!(phone, "Saved-session login completed");
+        let (client, updates) = connect_session(&path, session.api_id.raw()).await?;
+        info!(phone = %PhoneNumber::new(phone).masked(), "Saved-session login completed");
         Ok(AuthenticatedClient {
             client,
             updates,
@@ -163,19 +174,21 @@ impl InteractiveAuthenticator for GrammersAuthGateway {
         api_id: i32,
         api_hash: &str,
     ) -> Result<Self::PendingLogin, OxideError> {
-        info!(phone, api_id, "Starting manual Telegram login");
+        info!(phone = %PhoneNumber::new(phone).masked(), api_id, "Starting manual Telegram login");
         let path = session_path(phone);
         if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
+            tokio::time::timeout(IO_TIMEOUT, tokio::fs::create_dir_all(parent))
                 .await
+                .map_err(|_| AuthError::Timeout("Create session directory".to_string()))?
                 .map_err(|error| AuthError::SessionStorage(error.to_string()))?;
         }
         let (client, updates) = connect_session(&path, api_id).await?;
-        let token = client
-            .request_login_code(phone, api_hash)
-            .await
-            .map_err(AuthError::InvocationError)?;
-        info!(phone, "Telegram login code requested");
+        let token =
+            tokio::time::timeout(NETWORK_TIMEOUT, client.request_login_code(phone, api_hash))
+                .await
+                .map_err(|_| AuthError::Timeout("Request login code".to_string()))?
+                .map_err(AuthError::InvocationError)?;
+        info!(phone = %PhoneNumber::new(phone).masked(), "Telegram login code requested");
         Ok(PendingLogin {
             client,
             token,
@@ -192,7 +205,14 @@ impl InteractiveAuthenticator for GrammersAuthGateway {
         pending: &Self::PendingLogin,
         code: &str,
     ) -> Result<SignInStatus<Self::PasswordToken>, OxideError> {
-        match pending.client.sign_in(&pending.token, code).await {
+        let sign_in_res = tokio::time::timeout(
+            NETWORK_TIMEOUT,
+            pending.client.sign_in(&pending.token, code),
+        )
+        .await
+        .map_err(|_| AuthError::Timeout("Telegram sign-in".to_string()))?;
+
+        match sign_in_res {
             Ok(_) => Ok(SignInStatus::Authorized),
             Err(SignInError::PasswordRequired(token)) => {
                 info!("Telegram account requires 2FA");
@@ -211,11 +231,13 @@ impl InteractiveAuthenticator for GrammersAuthGateway {
         token: Self::PasswordToken,
         password: &str,
     ) -> Result<(), OxideError> {
-        pending
-            .client
-            .check_password(token, password)
-            .await
-            .map_err(|error| AuthError::SignIn(Box::new(error)))?;
+        tokio::time::timeout(
+            NETWORK_TIMEOUT,
+            pending.client.check_password(token, password),
+        )
+        .await
+        .map_err(|_| AuthError::Timeout("Check 2FA password".to_string()))?
+        .map_err(|error| AuthError::SignIn(Box::new(error)))?;
         Ok(())
     }
 
@@ -224,16 +246,17 @@ impl InteractiveAuthenticator for GrammersAuthGateway {
         pending: &Self::PendingLogin,
         password: &str,
     ) -> Result<SavedSession, OxideError> {
-        let bytes = tokio::fs::read(&pending.session_path)
+        let bytes = tokio::time::timeout(IO_TIMEOUT, tokio::fs::read(&pending.session_path))
             .await
+            .map_err(|_| AuthError::Timeout("Read session path".to_string()))?
             .map_err(|error| AuthError::SessionStorage(error.to_string()))?;
         let salt = crypto::generate_salt()?;
-        let encrypted = crypto::encrypt_string(password, &salt, &hex::encode(bytes))?;
+        let encrypted = crypto::encrypt_string_async(password, &salt, &hex::encode(bytes)).await?;
         info!("Encrypted Telegram session captured");
         Ok(SavedSession {
             salt: URL_SAFE_NO_PAD.encode(salt),
-            api_id: pending.api_id,
-            api_hash: pending.api_hash.clone(),
+            api_id: crate::domain::ApiId::new(pending.api_id),
+            api_hash: crate::domain::ApiHash::new(pending.api_hash.clone()),
             session_string: encrypted,
         })
     }

@@ -313,8 +313,8 @@ mod tests {
     fn saved_session() -> SavedSession {
         SavedSession {
             salt: "salt".to_string(),
-            api_id: 1,
-            api_hash: "hash".to_string(),
+            api_id: crate::domain::ApiId::new(1),
+            api_hash: crate::domain::ApiHash::new("hash"),
             session_string: "encrypted".to_string(),
         }
     }
@@ -333,5 +333,114 @@ mod tests {
             gateway.restored_phone.lock().unwrap().as_deref(),
             Some("+100")
         );
+    }
+
+    #[tokio::test]
+    async fn manual_login_rejects_duplicate_phone() {
+        struct DupPhoneConsole;
+        impl LoginConsole for DupPhoneConsole {
+            fn ask_text(&self, _: &str) -> Result<String, String> {
+                Ok("+100".to_string())
+            }
+            fn ask_password(&self, _: &str) -> Result<String, String> {
+                unreachable!()
+            }
+            fn ask_integer(&self, _: &str) -> Result<i32, String> {
+                unreachable!()
+            }
+            fn ask_confirm(&self, _: &str) -> Result<bool, String> {
+                Ok(false)
+            }
+            fn ask_autocomplete(&self, _: &str, _: Vec<String>) -> Result<String, String> {
+                unreachable!()
+            }
+        }
+
+        let mut sessions = MemorySessions {
+            sessions: vec![("+100".to_string(), saved_session())],
+        };
+        let console = DupPhoneConsole;
+        let gateway = FakeGateway::default();
+        let mut service = LoginService::new(&mut sessions, &console, &gateway);
+
+        let err = service.login().await.unwrap_err();
+        match err {
+            OxideError::Auth(AuthError::SessionAlreadyExists(phone)) => {
+                assert_eq!(phone, "+100");
+            }
+            other => panic!("Unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn saved_login_fails_when_session_not_found() {
+        struct MissingSessionConsole;
+        impl LoginConsole for MissingSessionConsole {
+            fn ask_text(&self, _: &str) -> Result<String, String> {
+                unreachable!()
+            }
+            fn ask_password(&self, _: &str) -> Result<String, String> {
+                Ok("secret".to_string())
+            }
+            fn ask_integer(&self, _: &str) -> Result<i32, String> {
+                unreachable!()
+            }
+            fn ask_confirm(&self, _: &str) -> Result<bool, String> {
+                Ok(true)
+            }
+            fn ask_autocomplete(&self, _: &str, _: Vec<String>) -> Result<String, String> {
+                Ok("+999".to_string())
+            }
+        }
+
+        let mut sessions = MemorySessions {
+            sessions: vec![("+100".to_string(), saved_session())],
+        };
+        let console = MissingSessionConsole;
+        let gateway = FakeGateway::default();
+        let mut service = LoginService::new(&mut sessions, &console, &gateway);
+
+        let err = service.login().await.unwrap_err();
+        match err {
+            OxideError::Auth(AuthError::SessionNotFound(phone)) => {
+                assert_eq!(phone, "+999");
+            }
+            other => panic!("Unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn console_ui_error_propagates() {
+        struct FailingConsole;
+        impl LoginConsole for FailingConsole {
+            fn ask_text(&self, _: &str) -> Result<String, String> {
+                unreachable!()
+            }
+            fn ask_password(&self, _: &str) -> Result<String, String> {
+                unreachable!()
+            }
+            fn ask_integer(&self, _: &str) -> Result<i32, String> {
+                unreachable!()
+            }
+            fn ask_confirm(&self, _: &str) -> Result<bool, String> {
+                Err("User cancelled prompt".to_string())
+            }
+            fn ask_autocomplete(&self, _: &str, _: Vec<String>) -> Result<String, String> {
+                unreachable!()
+            }
+        }
+
+        let mut sessions = MemorySessions::default();
+        let console = FailingConsole;
+        let gateway = FakeGateway::default();
+        let mut service = LoginService::new(&mut sessions, &console, &gateway);
+
+        let err = service.login().await.unwrap_err();
+        match err {
+            OxideError::Auth(AuthError::UiError(msg)) => {
+                assert!(msg.contains("User cancelled"));
+            }
+            other => panic!("Unexpected error: {other:?}"),
+        }
     }
 }

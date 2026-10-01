@@ -1,6 +1,7 @@
 //! Lua runtime and scripting infrastructure for OxideGram.
 
 pub mod api;
+pub mod buttons;
 pub mod filters;
 pub mod runner;
 
@@ -13,6 +14,7 @@ mod tests {
     use super::api::create_stop_function;
     use super::filters::parse_message_filter;
     use crate::domain::automation::{ChatType, MessageContext};
+    use crate::domain::types::{ChatId, SenderId};
     use mlua::{Function, Lua, Table, Value};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -38,22 +40,22 @@ mod tests {
 
         assert!(filter.matches(&MessageContext {
             text: "/start payload",
-            chat_id: 100,
-            sender_id: 42,
+            chat_id: ChatId::new(100),
+            sender_id: SenderId::new(42),
             incoming: true,
             chat_type: ChatType::Private,
         }));
         assert!(!filter.matches(&MessageContext {
             text: "/start payload",
-            chat_id: 300,
-            sender_id: 42,
+            chat_id: ChatId::new(300),
+            sender_id: SenderId::new(42),
             incoming: true,
             chat_type: ChatType::Private,
         }));
         assert!(!filter.matches(&MessageContext {
             text: "/start payload",
-            chat_id: 100,
-            sender_id: 42,
+            chat_id: ChatId::new(100),
+            sender_id: SenderId::new(42),
             incoming: false,
             chat_type: ChatType::Private,
         }));
@@ -67,8 +69,8 @@ mod tests {
 
         assert!(filter.matches(&MessageContext {
             text: "/start@my_bot argument",
-            chat_id: 1,
-            sender_id: 1,
+            chat_id: ChatId::new(1),
+            sender_id: SenderId::new(1),
             incoming: true,
             chat_type: ChatType::Group,
         }));
@@ -161,5 +163,62 @@ mod tests {
         lua.load("stop(); stop()").exec().unwrap();
 
         assert!(*stop_rx.borrow());
+    }
+
+    #[test]
+    fn parses_various_message_options() {
+        let lua = Lua::new();
+
+        // None
+        let opts = super::api::parse_message_options(None).unwrap();
+        assert!(opts.delay.is_none());
+        assert!(opts.parse_mode.is_none());
+
+        // Numeric delay
+        let val: Value = lua.load("2.5").eval().unwrap();
+        let opts = super::api::parse_message_options(Some(val)).unwrap();
+        assert_eq!(opts.delay, Some(2.5));
+        assert!(opts.parse_mode.is_none());
+
+        // Table with delay and markdown
+        let val: Value = lua
+            .load(r#"{ delay = 1.2, parse_mode = "markdown" }"#)
+            .eval()
+            .unwrap();
+        let opts = super::api::parse_message_options(Some(val)).unwrap();
+        assert_eq!(opts.delay, Some(1.2));
+        assert_eq!(opts.parse_mode.as_deref(), Some("markdown"));
+    }
+
+    #[tokio::test]
+    async fn timer_hub_schedules_and_cancels_properly() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+        let hub = super::api::TimerHub::new(tx);
+        let lua = Lua::new();
+
+        let func = lua.create_function(|_, ()| Ok(())).unwrap();
+        let key = lua.create_registry_value(func).unwrap();
+
+        // Add timeout of 50ms
+        let _id = hub
+            .add_timer(key, std::time::Duration::from_millis(50), false)
+            .await;
+
+        let res = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await;
+        assert!(res.is_ok());
+
+        // Test cancellation
+        let func2 = lua.create_function(|_, ()| Ok(())).unwrap();
+        let key2 = lua.create_registry_value(func2).unwrap();
+        let id2 = hub
+            .add_timer(key2, std::time::Duration::from_millis(200), true)
+            .await;
+
+        let cleared = hub.clear_timer(id2).await;
+        assert!(cleared);
+
+        // Ensure no events arrive for canceled timer
+        let res2 = tokio::time::timeout(std::time::Duration::from_millis(250), rx.recv()).await;
+        assert!(res2.is_err());
     }
 }

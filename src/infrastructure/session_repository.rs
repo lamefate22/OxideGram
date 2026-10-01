@@ -4,8 +4,10 @@
 //! in `data/config.oxide` using atomic file replacement.
 
 use crate::application::authentication::SessionRepository;
+use crate::domain::PhoneNumber;
 use crate::domain::identity::SavedSession;
 use crate::errors::{ConfigError, OxideError};
+use crate::infrastructure::IO_TIMEOUT;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -33,8 +35,8 @@ impl From<SavedSession> for PersistedSession {
     fn from(session: SavedSession) -> Self {
         Self {
             salt: session.salt,
-            api_id: session.api_id,
-            api_hash: session.api_hash,
+            api_id: session.api_id.raw(),
+            api_hash: session.api_hash.to_string(),
             session_string: session.session_string,
         }
     }
@@ -44,8 +46,8 @@ impl From<&PersistedSession> for SavedSession {
     fn from(session: &PersistedSession) -> Self {
         Self {
             salt: session.salt.clone(),
-            api_id: session.api_id,
-            api_hash: session.api_hash.clone(),
+            api_id: crate::domain::ApiId::new(session.api_id),
+            api_hash: crate::domain::ApiHash::new(&session.api_hash),
             session_string: session.session_string.clone(),
         }
     }
@@ -76,7 +78,15 @@ impl OxideConfig {
     async fn ensure_config_exists(&self) -> Result<(), OxideError> {
         if !self.path.exists() {
             if let Some(parent) = self.path.parent() {
-                fs::create_dir_all(parent).await.map_err(ConfigError::Io)?;
+                tokio::time::timeout(IO_TIMEOUT, fs::create_dir_all(parent))
+                    .await
+                    .map_err(|_| {
+                        ConfigError::Io(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "Create config directory timed out",
+                        ))
+                    })?
+                    .map_err(ConfigError::Io)?;
             }
             self.save().await?;
         }
@@ -86,8 +96,14 @@ impl OxideConfig {
     /// Loads the configuration file from disk. If missing, creates an empty configuration.
     pub async fn load(&mut self) -> Result<(), OxideError> {
         self.ensure_config_exists().await?;
-        let content = fs::read_to_string(&self.path)
+        let content = tokio::time::timeout(IO_TIMEOUT, fs::read_to_string(&self.path))
             .await
+            .map_err(|_| {
+                ConfigError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Read config file timed out",
+                ))
+            })?
             .map_err(ConfigError::Io)?;
         let settings: SettingsModel =
             toml::from_str(&content).map_err(ConfigError::Deserialization)?;
@@ -101,12 +117,30 @@ impl OxideConfig {
         let toml_string = toml::to_string_pretty(&self.data).map_err(ConfigError::Serialization)?;
         let tmp_path = self.path.with_extension("tmp");
 
-        if let Err(e) = fs::write(&tmp_path, &toml_string).await {
+        let write_res = tokio::time::timeout(IO_TIMEOUT, fs::write(&tmp_path, &toml_string))
+            .await
+            .map_err(|_| {
+                ConfigError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Write temporary config timed out",
+                ))
+            })?;
+
+        if let Err(e) = write_res {
             let _ = fs::remove_file(&tmp_path).await;
             return Err(ConfigError::Io(e).into());
         }
 
-        if let Err(e) = fs::rename(&tmp_path, &self.path).await {
+        let rename_res = tokio::time::timeout(IO_TIMEOUT, fs::rename(&tmp_path, &self.path))
+            .await
+            .map_err(|_| {
+                ConfigError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Rename temporary config timed out",
+                ))
+            })?;
+
+        if let Err(e) = rename_res {
             let _ = fs::remove_file(&tmp_path).await;
             return Err(ConfigError::Io(e).into());
         }
@@ -121,7 +155,7 @@ impl OxideConfig {
         phone: String,
         session_data: SavedSession,
     ) -> Result<(), OxideError> {
-        info!(phone, "Session added to configuration");
+        info!(phone = %PhoneNumber::new(&phone).masked(), "Session added to configuration");
         self.data.sessions.insert(phone, session_data.into());
         self.save().await
     }
@@ -148,5 +182,81 @@ impl SessionRepository for OxideConfig {
         session: SavedSession,
     ) -> Result<(), OxideError> {
         self.add_session(phone, session).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{ApiHash, ApiId};
+
+    struct TempConfigPath(PathBuf);
+
+    impl TempConfigPath {
+        fn new() -> Self {
+            let path =
+                std::env::temp_dir().join(format!("oxidegram_test_{}.toml", rand::random::<u64>()));
+            Self(path)
+        }
+    }
+
+    impl Drop for TempConfigPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+            let _ = std::fs::remove_file(self.0.with_extension("tmp"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_empty_config_creation() {
+        let temp = TempConfigPath::new();
+        let mut config = OxideConfig::new(temp.0.clone());
+        config.load().await.unwrap();
+
+        assert!(config.session_phones().is_empty());
+        assert!(temp.0.exists());
+    }
+
+    #[tokio::test]
+    async fn test_save_and_load_roundtrip() {
+        let temp = TempConfigPath::new();
+        let mut config = OxideConfig::new(temp.0.clone());
+        config.load().await.unwrap();
+
+        let session = SavedSession {
+            salt: "salt_abc".into(),
+            api_id: ApiId::new(999888),
+            api_hash: ApiHash::new("hash12345"),
+            session_string: "ciphertext_sample".into(),
+        };
+
+        config
+            .save_session("+1234567890".into(), session.clone())
+            .await
+            .unwrap();
+
+        let mut config2 = OxideConfig::new(temp.0.clone());
+        config2.load().await.unwrap();
+
+        assert_eq!(config2.session_phones(), vec!["+1234567890"]);
+        let loaded = config2.session("+1234567890").unwrap();
+        assert_eq!(loaded.api_id.raw(), 999888);
+        assert_eq!(loaded.api_hash.as_str(), "hash12345");
+        assert_eq!(loaded.salt, "salt_abc");
+        assert_eq!(loaded.session_string, "ciphertext_sample");
+    }
+
+    #[tokio::test]
+    async fn test_corrupted_toml_returns_deserialization_error() {
+        let temp = TempConfigPath::new();
+        std::fs::write(&temp.0, "[[invalid toml = = {").unwrap();
+
+        let mut config = OxideConfig::new(temp.0.clone());
+        let err = config.load().await.unwrap_err();
+
+        assert!(matches!(
+            err,
+            OxideError::Config(ConfigError::Deserialization(_))
+        ));
     }
 }

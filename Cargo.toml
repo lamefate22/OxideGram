@@ -4,12 +4,13 @@ version = "1.3.0"
 edition = "2024"
 
 [dependencies]
-mlua = { version = "0.12.0", features = ["lua54", "vendored", "async"] }
+mlua = { version = "0.12.0", features = ["lua54", "vendored", "async", "send"] }
 grammers-mtsender = { git = "https://codeberg.org/Lonami/grammers.git" }
 grammers-tl-types = { git = "https://codeberg.org/Lonami/grammers.git" }
 grammers-session = { git = "https://codeberg.org/Lonami/grammers.git" }
-grammers-client = { git = "https://codeberg.org/Lonami/grammers.git" }
+grammers-client = { git = "https://codeberg.org/Lonami/grammers.git", features = ["markdown", "html"] }
 grammers-crypto = { git = "https://codeberg.org/Lonami/grammers.git" }
+notify = "8.0"
 # Pinned to 2.0.0-rc0 due to breaking changes in glass_pumpkin 2.0.0-rc1 breaking grammers-crypto
 glass_pumpkin = "=2.0.0-rc0"
 aes-gcm = { version = "0.11.0", features = ["getrandom"] }

@@ -78,12 +78,17 @@ local MessageEvent = {}
 
 --- Replies directly to this message with a quote (`reply_to`).
 --- Supports both positional syntax and named table syntax.
+--- Supports both colon syntax (`event:reply(...)`) and dot syntax (`event.reply(...)`).
 ---
 --- Example:
 --- ```lua
 --- event:reply("Hello!")
+--- event.reply("Hello!")
 --- event:reply { text = "Hello with delay", delay = 1.0 }
+--- event.reply { text = "Hello with delay", delay = 1.0 }
 --- ```
+---@overload fun(options: EventReplyTableOptions): nil
+---@overload fun(text: string, options?: MessageOptions|number): nil
 ---@overload fun(self: MessageEvent, options: EventReplyTableOptions): nil
 ---@param text string Message text content.
 ---@param options? MessageOptions|number Options table or numeric delay in seconds.
@@ -92,12 +97,17 @@ function MessageEvent:reply(text, options) end
 
 --- Edits this message with new text.
 --- Supports both positional syntax and named table syntax.
+--- Supports both colon syntax (`event:edit(...)`) and dot syntax (`event.edit(...)`).
 ---
 --- Example:
 --- ```lua
 --- event:edit("Updated text")
+--- event.edit("Updated text")
 --- event:edit { text = "Updated with mode", parse_mode = "markdown" }
+--- event.edit { text = "Updated with mode", parse_mode = "markdown" }
 --- ```
+---@overload fun(options: EventEditTableOptions): nil
+---@overload fun(new_text: string, options?: MessageOptions|number): nil
 ---@overload fun(self: MessageEvent, options: EventEditTableOptions): nil
 ---@param new_text string New message text.
 ---@param options? MessageOptions|number Options table or numeric delay in seconds.
@@ -105,25 +115,35 @@ function MessageEvent:reply(text, options) end
 function MessageEvent:edit(new_text, options) end
 
 --- Deletes this message.
+--- Supports both colon syntax (`event:delete(...)`) and dot syntax (`event.delete(...)`).
 ---
 --- Example:
 --- ```lua
 --- event:delete()
+--- event.delete()
 --- event:delete(2.0)
+--- event.delete(2.0)
 --- event:delete { delay = 2.0 }
+--- event.delete { delay = 2.0 }
 --- ```
----@overload fun(self: MessageEvent, options: EventDeleteTableOptions): nil
----@param delay? number Optional delay in seconds before deleting.
+---@overload fun(self: MessageEvent, options?: EventDeleteTableOptions|number): nil
+---@param delay_or_options? number|EventDeleteTableOptions Optional delay in seconds or options table.
 ---@return nil
-function MessageEvent:delete(delay) end
+function MessageEvent.delete(delay_or_options) end
 
 --- Sends an emoji reaction to this message.
+--- Supports both positional syntax and named table syntax.
+--- Supports both colon syntax (`event:react(...)`) and dot syntax (`event.react(...)`).
 ---
 --- Example:
 --- ```lua
 --- event:react("👍")
+--- event.react("👍")
 --- event:react { emoji = "🔥", delay = 0.5 }
+--- event.react { emoji = "🔥", delay = 0.5 }
 --- ```
+---@overload fun(options: EventReactTableOptions): nil
+---@overload fun(emoji: string, delay?: number): nil
 ---@overload fun(self: MessageEvent, options: EventReactTableOptions): nil
 ---@param emoji string Reaction emoji (e.g. "👍", "🔥", "❤️").
 ---@param delay? number Optional delay in seconds.
@@ -131,29 +151,38 @@ function MessageEvent:delete(delay) end
 function MessageEvent:react(emoji, delay) end
 
 --- Pins this message in the chat.
+--- Supports both colon syntax (`event:pin(...)`) and dot syntax (`event.pin(...)`).
 ---
 --- Example:
 --- ```lua
 --- event:pin()
+--- event.pin()
 --- event:pin { delay = 0.5 }
+--- event.pin { delay = 0.5 }
 --- ```
----@overload fun(self: MessageEvent, options: EventPinTableOptions): nil
----@param delay? number Optional delay in seconds.
+---@overload fun(self: MessageEvent, options?: EventPinTableOptions|number): nil
+---@param delay_or_options? number|EventPinTableOptions Optional delay in seconds or options table.
 ---@return nil
-function MessageEvent:pin(delay) end
+function MessageEvent.pin(delay_or_options) end
 
 --- Clicks an inline button or simulates pressing a regular reply keyboard button.
 ---
 --- Supports exact text, case-insensitive substring, emoji match, or 1-based numeric index.
 --- If the button is an inline callback button, executes MTProto `GetBotCallbackAnswer`.
 --- If the button is a reply keyboard button, sends the button label text to the chat.
+--- Supports both colon syntax (`event:click(...)`) and dot syntax (`event.click(...)`).
 ---
 --- Example:
 --- ```lua
 --- event:click("Next")
+--- event.click("Next")
 --- event:click(1)
+--- event.click(1)
 --- event:click { query = "Next", delay = 1.0 }
+--- event.click { query = "Next", delay = 1.0 }
 --- ```
+---@overload fun(options: EventClickTableOptions): BotCallbackAnswer|boolean
+---@overload fun(query_or_index: string|integer, delay?: number): BotCallbackAnswer|boolean
 ---@overload fun(self: MessageEvent, options: EventClickTableOptions): BotCallbackAnswer|boolean
 ---@param query_or_index string|integer Button label text or 1-based index (e.g. `1` for the first button).
 ---@param delay? number Optional delay in seconds.
@@ -171,7 +200,7 @@ function MessageEvent:click(query_or_index, delay) end
 ---@field senders? integer|integer[] Sender ID or list of sender IDs to accept.
 ---@field incoming? boolean Match only incoming messages (`true`) or outgoing (`false`).
 ---@field outgoing? boolean Match only outgoing messages (`true`) or incoming (`false`).
----@field private? boolean Match 1-on-1 private user chats.
+---@field ["private"]? boolean Match 1-on-1 private user chats.
 ---@field group? boolean Match basic groups.
 ---@field channel? boolean Match channels and supergroups.
 ---@field has_text? boolean `true` if text is non-empty, `false` if empty.
@@ -188,33 +217,45 @@ function MessageEvent:click(query_or_index, delay) end
 local StorageAPI = {}
 
 --- Retrieves a value from persistent storage, or default if missing.
+--- Supports both dot syntax (`ox.storage.get(...)`) and colon syntax (`ox.storage:get(...)`).
 ---@generic T
+---@overload fun(self: StorageAPI, key: string, default?: T): T
 ---@param key string Storage key.
 ---@param default? T Default value returned if key does not exist.
 ---@return T
 function StorageAPI.get(key, default) end
 
 --- Stores a value in persistent storage (persisted to disk as JSON).
+--- Supports both dot syntax (`ox.storage.set(...)`) and colon syntax (`ox.storage:set(...)`).
+---@overload fun(self: StorageAPI, key: string, value: any): nil
 ---@param key string Storage key.
 ---@param value any Value to store (string, number, boolean, or table).
 ---@return nil
 function StorageAPI.set(key, value) end
 
 --- Checks if a key exists in storage.
+--- Supports both dot syntax (`ox.storage.has(...)`) and colon syntax (`ox.storage:has(...)`).
+---@overload fun(self: StorageAPI, key: string): boolean
 ---@param key string Storage key.
 ---@return boolean
 function StorageAPI.has(key) end
 
 --- Deletes a key from storage.
+--- Supports both dot syntax (`ox.storage.delete(...)`) and colon syntax (`ox.storage:delete(...)`).
+---@overload fun(self: StorageAPI, key: string): boolean
 ---@param key string Storage key.
 ---@return boolean `true` if key was deleted, `false` if it didn't exist.
 function StorageAPI.delete(key) end
 
 --- Returns all stored key-value pairs as a Lua table.
+--- Supports both dot syntax (`ox.storage.all()`) and colon syntax (`ox.storage:all()`).
+---@overload fun(self: StorageAPI): table<string, any>
 ---@return table<string, any>
 function StorageAPI.all() end
 
 --- Clears all stored data for this bot.
+--- Supports both dot syntax (`ox.storage.clear()`) and colon syntax (`ox.storage:clear()`).
+---@overload fun(self: StorageAPI): nil
 ---@return nil
 function StorageAPI.clear() end
 
@@ -227,22 +268,30 @@ function StorageAPI.clear() end
 local LogAPI = {}
 
 --- Logs an informational message.
----@param message string
+--- Supports both dot syntax (`ox.log.info(...)`) and colon syntax (`ox.log:info(...)`).
+---@overload fun(self: LogAPI, message: any): nil
+---@param message any
 ---@return nil
 function LogAPI.info(message) end
 
 --- Logs a warning message.
----@param message string
+--- Supports both dot syntax (`ox.log.warn(...)`) and colon syntax (`ox.log:warn(...)`).
+---@overload fun(self: LogAPI, message: any): nil
+---@param message any
 ---@return nil
 function LogAPI.warn(message) end
 
 --- Logs an error message.
----@param message string
+--- Supports both dot syntax (`ox.log.error(...)`) and colon syntax (`ox.log:error(...)`).
+---@overload fun(self: LogAPI, message: any): nil
+---@param message any
 ---@return nil
 function LogAPI.error(message) end
 
 --- Logs a debug message (written to file log or verbose console).
----@param message string
+--- Supports both dot syntax (`ox.log.debug(...)`) and colon syntax (`ox.log:debug(...)`).
+---@overload fun(self: LogAPI, message: any): nil
+---@param message any
 ---@return nil
 function LogAPI.debug(message) end
 
@@ -257,7 +306,7 @@ function LogAPI.debug(message) end
 ---@field senders? integer|integer[] Sender ID or list of sender IDs to accept.
 ---@field incoming? boolean Match only incoming messages (`true`) or outgoing (`false`).
 ---@field outgoing? boolean Match only outgoing messages (`true`) or incoming (`false`).
----@field private? boolean Match 1-on-1 private user chats.
+---@field ["private"]? boolean Match 1-on-1 private user chats.
 ---@field group? boolean Match basic groups.
 ---@field channel? boolean Match channels and supergroups.
 ---@field has_text? boolean `true` if text is non-empty, `false` if empty.
@@ -270,13 +319,17 @@ function LogAPI.debug(message) end
 local FlowContext = {}
 
 --- Sets a key in this flow's session state.
+--- Supports both colon syntax (`ctx:set(...)`) and dot syntax (`ctx.set(...)`).
+---@overload fun(key: string, value: any): nil
 ---@param key string
 ---@param value any
 ---@return nil
 function FlowContext:set(key, value) end
 
 --- Gets a value from this flow's session state.
+--- Supports both colon syntax (`ctx:get(...)`) and dot syntax (`ctx.get(...)`).
 ---@generic T
+---@overload fun(key: string, default?: T): T
 ---@param key string
 ---@param default? T
 ---@return T
@@ -295,12 +348,15 @@ function FlowContext:get(key, default) end
 local Flow = {}
 
 --- Defines a named step in the state machine.
+--- Supports both colon syntax (`flow:step(...)`) and dot syntax (`flow.step(...)`).
+---@overload fun(name: string, config: StepConfig): Flow
 ---@param name string Name of the step (e.g. "ask_grade", "confirm").
 ---@param config StepConfig Step matching rules and action handler.
 ---@return Flow
 function Flow:step(name, config) end
 
 --- Registers a top-level command router (replaces `ox.on_message` for slash commands).
+--- Supports both colon syntax (`flow:command(...)`) and dot syntax (`flow.command(...)`).
 ---
 --- Example:
 --- ```lua
@@ -309,12 +365,14 @@ function Flow:step(name, config) end
 ---     return "ask_name"
 --- end)
 --- ```
+---@overload fun(commands: string|string[], action: fun(event: MessageEvent, ctx: FlowContext): string|nil): Flow
 ---@param commands string|string[] Command name or list of command names without slash.
 ---@param action fun(event: MessageEvent, ctx: FlowContext): string|nil
 ---@return Flow
 function Flow:command(commands, action) end
 
 --- Registers a top-level pattern / keyword trigger.
+--- Supports both colon syntax (`flow:on(...)`) and dot syntax (`flow.on(...)`).
 ---
 --- Example:
 --- ```lua
@@ -322,17 +380,22 @@ function Flow:command(commands, action) end
 ---     event:reply("Available commands: /start, /cancel")
 --- end)
 --- ```
+---@overload fun(pattern_or_keywords: string|string[], action: fun(event: MessageEvent, ctx: FlowContext): string|nil): Flow
 ---@param pattern_or_keywords string|string[] Substring or regex pattern.
 ---@param action fun(event: MessageEvent, ctx: FlowContext): string|nil
 ---@return Flow
 function Flow:on(pattern_or_keywords, action) end
 
 --- Transitions the flow to a specific step immediately.
+--- Supports both colon syntax (`flow:go_to(...)`) and dot syntax (`flow.go_to(...)`).
+---@overload fun(step_name: string): Flow
 ---@param step_name string Target step name.
 ---@return Flow
 function Flow:go_to(step_name) end
 
 --- Resets the flow to its initial / idle state.
+--- Supports both colon syntax (`flow:reset()`) and dot syntax (`flow.reset()`).
+---@overload fun(): Flow
 ---@return Flow
 function Flow:reset() end
 

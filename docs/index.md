@@ -132,7 +132,7 @@ OxideGram provides a dual-layer logging architecture powered by `tracing` and `t
 - **Dialog State Machine (`ox.flow`)**: Construct complex multi-step dialogs with per-step timeouts, branching conditions, and persistent state.
 - **Persistent Key-Value Storage (`ox.storage`)**: Store user preferences, counters, and session states in automatic JSON storage files (`data/storage/`).
 - **Interactive Startup Prompts**: Request runtime inputs via interactive terminal select menus (`ox.select`), yes/no confirmations (`ox.confirm`), file path prompts (`ox.file`), and text prompts (`ox.input`).
-- **Keyboard Button Automation**: Comprehensive support for inline and reply keyboards (`event.buttons`), with programmatic click execution (`event:click`).
+- **Keyboard Button Automation**: Comprehensive support for inline and reply keyboards (`event.buttons`), with programmatic click execution (`event:click`, `event:click_button`, `ox.click_button`), including MTProto callback data queries and raw JSON payloads.
 - **Rich Message Control**: Edit messages (`event:edit`), delete (`event:delete`), apply emoji reactions (`event:react`), pin messages (`event:pin`), and forward (`ox.forward_message`).
 - **Media File Transfers**: Send photos, uncompressed files, audio tracks, and native voice notes (`ox.send_image`, `ox.send_document`, `ox.send_audio`, `ox.send_voice`).
 - **Regex Captures and Background Timers**: Extract positional (`event.matches`) and named captures (`event.captures`), and manage background intervals and timeouts (`ox.set_interval`, `ox.set_timeout`).

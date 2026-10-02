@@ -97,25 +97,30 @@ pub fn markup_to_lua_table(lua: &Lua, markup: &MessageMarkup) -> mlua::Result<ml
                     btn_table.set("is_callback", true)?;
                     btn_table.set("is_url", false)?;
                     btn_table.set("is_text", false)?;
+                    btn_table.set("type", "callback")?;
                     let data_str = std::str::from_utf8(data).unwrap_or("");
                     btn_table.set("callback_data", data_str)?;
+                    btn_table.set("data", data_str)?;
                     btn_table.set("raw_data", lua.create_string(data)?)?;
                 }
                 ButtonKind::Url(url) => {
                     btn_table.set("is_callback", false)?;
                     btn_table.set("is_url", true)?;
                     btn_table.set("is_text", false)?;
+                    btn_table.set("type", "url")?;
                     btn_table.set("url", url.clone())?;
                 }
                 ButtonKind::Text => {
                     btn_table.set("is_callback", false)?;
                     btn_table.set("is_url", false)?;
                     btn_table.set("is_text", true)?;
+                    btn_table.set("type", "text")?;
                 }
                 ButtonKind::Other => {
                     btn_table.set("is_callback", false)?;
                     btn_table.set("is_url", false)?;
                     btn_table.set("is_text", false)?;
+                    btn_table.set("type", "other")?;
                 }
             }
             row_table.set(c_idx + 1, btn_table)?;
@@ -202,5 +207,44 @@ mod tests {
         let btn = parsed.button_at(0, 0).unwrap();
         assert_eq!(btn.text, "Start Search");
         assert_eq!(btn.kind, ButtonKind::Text);
+    }
+
+    #[test]
+    fn markup_to_lua_table_produces_expected_fields() {
+        let lua = Lua::new();
+        let markup = MessageMarkup {
+            is_inline: true,
+            rows: vec![KeyboardRow {
+                buttons: vec![
+                    BotButton {
+                        text: "Callback Btn".into(),
+                        kind: ButtonKind::Callback(b"cb:123".to_vec()),
+                    },
+                    BotButton {
+                        text: "Link Btn".into(),
+                        kind: ButtonKind::Url("https://example.com".into()),
+                    },
+                ],
+            }],
+        };
+
+        let root = markup_to_lua_table(&lua, &markup).unwrap();
+        let row1: mlua::Table = root.get(1).unwrap();
+        let btn1: mlua::Table = row1.get(1).unwrap();
+        assert_eq!(btn1.get::<String>("text").unwrap(), "Callback Btn");
+        assert_eq!(btn1.get::<i64>("row").unwrap(), 1);
+        assert_eq!(btn1.get::<i64>("col").unwrap(), 1);
+        assert!(btn1.get::<bool>("is_callback").unwrap());
+        assert!(!btn1.get::<bool>("is_url").unwrap());
+        assert!(!btn1.get::<bool>("is_text").unwrap());
+        assert_eq!(btn1.get::<String>("type").unwrap(), "callback");
+        assert_eq!(btn1.get::<String>("callback_data").unwrap(), "cb:123");
+        assert_eq!(btn1.get::<String>("data").unwrap(), "cb:123");
+
+        let btn2: mlua::Table = row1.get(2).unwrap();
+        assert_eq!(btn2.get::<String>("text").unwrap(), "Link Btn");
+        assert_eq!(btn2.get::<String>("type").unwrap(), "url");
+        assert!(btn2.get::<bool>("is_url").unwrap());
+        assert_eq!(btn2.get::<String>("url").unwrap(), "https://example.com");
     }
 }

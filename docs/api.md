@@ -353,7 +353,7 @@ ox.send_typing(event.chat_id, "upload_document")
 
 ### `ox.click_button`
 
-Simulates clicking an inline callback button or pressing a regular reply keyboard button.
+Simulates clicking an inline callback button on any message by sending MTProto `messages.getBotCallbackAnswer`. Transmits the raw callback data payload directly to the bot without sending text to the chat.
 
 #### Syntax
 
@@ -366,21 +366,31 @@ ox.click_button(options_table)
 
 | Parameter | Type | Required | Description | Default |
 |:---|:---|:---|:---|:---|
-| `chat_id` | `integer` | Yes | Chat ID containing the button. | — |
-| `message_id` | `integer` | Yes | Message ID containing the keyboard. | — |
-| `data` | `string` | Yes | Callback data string of the button. | — |
+| `chat_id` | `integer` | Yes | Chat ID containing the target message. | — |
+| `message_id` | `integer` | Yes | Message ID containing the inline keyboard button. | — |
+| `data` | `string` | Yes | Raw callback payload string (e.g. `"agree_terms"` or JSON `'{"com":"START_DIAL_POST","data":"1108360"}'`). | — |
+
+#### Return Value
+
+Returns a `table` with fields:
+- `alert` (`boolean`): Whether an alert popup was requested by the bot.
+- `message` (`string|nil`): Popup notification text if sent by the bot.
+- `url` (`string|nil`): URL to open if specified by the bot.
 
 #### Examples
 
 ```lua
--- Example 1: Click button by callback payload
+-- Example 1: Click button by simple callback string
 ox.click_button(event.chat_id, event.message_id, "agree_terms")
 
--- Example 2: Named table syntax
+-- Example 2: Click button with structured JSON callback payload
+ox.click_button(event.chat_id, event.message_id, '{"com":"START_DIAL_POST","data":"1108360"}')
+
+-- Example 3: Named table syntax
 ox.click_button {
     chat_id = event.chat_id,
     message_id = event.message_id,
-    data = "page_next",
+    data = '{"com":"START_DIAL_POST","data":"1108360"}',
 }
 ```
 
@@ -898,6 +908,24 @@ Every message callback receives an enriched `event` table describing the Telegra
 | `event.captures` | `table<string, string>` | Named capture groups extracted by a regex filter. |
 | `event.buttons` | `Button[][]` | 2D matrix of inline or reply keyboard buttons attached to this message. |
 
+#### Button Structure
+
+Each element inside `event.buttons[row][col]` is a button table with the following properties:
+
+| Property | Type | Description |
+|:---|:---|:---|
+| `btn.text` | `string` | Display label or emoji shown on the button. |
+| `btn.row` | `integer` | 1-based row index in the keyboard layout. |
+| `btn.col` | `integer` | 1-based column index within the keyboard row. |
+| `btn.is_callback` | `boolean` | `true` if this is an inline callback button (`messages.getBotCallbackAnswer`). |
+| `btn.is_url` | `boolean` | `true` if this button opens an external URL. |
+| `btn.is_text` | `boolean` | `true` if this is a standard reply keyboard button that sends chat text. |
+| `btn.type` | `string` | Button kind tag: `"callback"`, `"url"`, `"text"`, or `"other"`. |
+| `btn.callback_data` | `string` \| `nil` | Decoded UTF-8 callback payload string (for inline callback buttons). |
+| `btn.data` | `string` \| `nil` | Convenient alias for `btn.callback_data`. |
+| `btn.raw_data` | `string` \| `nil` | Raw binary byte string of callback data (for inline callback buttons). |
+| `btn.url` | `string` \| `nil` | Destination link (for URL buttons). |
+
 ---
 
 ### `event:reply`
@@ -1045,7 +1073,11 @@ event:pin { delay = 1.0 }
 
 ### `event:click`
 
-Clicks a button on this message's keyboard by text label, substring, or 1-based index.
+Clicks a button on this message's keyboard by text label, substring, 1-based index, or explicit callback data payload.
+
+- If the button is an inline callback button, executes MTProto `messages.getBotCallbackAnswer` directly with Telegram servers without posting any text to the chat.
+- If raw callback data or a JSON string (e.g. `'{"com":"START_DIAL_POST","data":"1108360"}'`) is provided or specified via `{ data = ... }`, MTProto `GetBotCallbackAnswer` is immediately executed.
+- If the button is a standard reply keyboard button, sends the button text as an incoming chat message.
 
 #### Syntax
 
@@ -1058,20 +1090,73 @@ event:click(options_table)
 
 | Parameter | Type | Required | Description | Default |
 |:---|:---|:---|:---|:---|
-| `query_or_index` | `string` \| `integer` | Yes | Button label text or 1-based sequential button index. | — |
+| `query_or_index` | `string` \| `integer` | Yes | Button label text, substring, 1-based index, or callback payload. | — |
 | `delay` | `number` | No | Delay in seconds before clicking. | `0` |
+| `options.query` | `string` \| `integer` | No | Button label, substring, or 1-based index. | `nil` |
+| `options.text` | `string` | No | Alias for `options.query`. | `nil` |
+| `options.data` | `string` | No | Explicit callback payload (forces MTProto `GetBotCallbackAnswer`). | `nil` |
+| `options.delay` | `number` | No | Delay in seconds before clicking. | `0` |
+
+#### Return Value
+
+Returns a `string` containing the bot's callback toast message or the clicked button label.
 
 #### Examples
 
 ```lua
--- Click by label
+-- Example 1: Click by text label
 event:click("Accept")
 
--- Click the first button with delay
+-- Example 2: Click the first button with delay
 event:click(1, 0.5)
 
--- Named table syntax
+-- Example 3: Click using named table syntax
 event:click { query = "Next Page", delay = 1.0 }
+
+-- Example 4: Click using explicit callback data payload
+event:click { data = '{"com":"START_DIAL_POST","data":"1108360"}', delay = 0.5 }
+```
+
+---
+
+### `event:click_button`
+
+Convenience method to simulate clicking an inline callback button on this message by sending MTProto `messages.getBotCallbackAnswer` with the specified raw callback data payload. Transmits data directly to the bot without sending any chat messages.
+
+#### Syntax
+
+```lua
+event:click_button(callback_data[, delay])
+event:click_button(options_table)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `callback_data` | `string` | Yes | Raw callback data payload string (e.g. `"agree_terms"` or JSON `'{"com":"START_DIAL_POST","data":"1108360"}'`). | — |
+| `delay` | `number` | No | Delay in seconds before executing click. | `0` |
+| `options.data` | `string` | Yes | Callback data payload (in named table syntax). | — |
+| `options.delay` | `number` | No | Delay in seconds before executing click. | `0` |
+
+#### Return Value
+
+Returns a `string` containing the bot's alert or toast message if returned by Telegram.
+
+#### Examples
+
+```lua
+-- Example 1: Click button with simple callback string
+event:click_button("confirm_order")
+
+-- Example 2: Click button with structured JSON payload and delay
+event:click_button('{"com":"START_DIAL_POST","data":"1108360"}', 0.5)
+
+-- Example 3: Named table syntax
+event:click_button {
+    data = '{"com":"START_DIAL_POST","data":"1108360"}',
+    delay = 1.0,
+}
 ```
 
 ---

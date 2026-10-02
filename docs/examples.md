@@ -53,7 +53,10 @@ ox.on_message({ incoming = true }, function(event)
 
     for row_idx, row in ipairs(event.buttons) do
         for col_idx, btn in ipairs(row) do
-            ox.log:debug(string.format("Button [%d,%d]: '%s' [type: %s]", row_idx, col_idx, btn.text, btn.type))
+            ox.log:debug(string.format(
+                "Button [%d,%d]: '%s' [type: %s, callback: %s]",
+                row_idx, col_idx, btn.text, btn.type, tostring(btn.is_callback)
+            ))
 
             -- Match verification or confirmation prompts
             local text_lower = btn.text:lower()
@@ -68,6 +71,52 @@ ox.on_message({ incoming = true }, function(event)
         end
     end
 end)
+```
+
+---
+
+## Inline Callback Automation (JSON & Custom Payloads)
+
+Many third-party Telegram bots (dating bots, captcha services, interactive games) use raw callback data payloads — such as JSON strings `{"com":"START_DIAL_POST","data":"1108360"}` or custom action identifiers `cb:vote:42`. 
+
+OxideGram lets you trigger these callbacks directly via MTProto `GetBotCallbackAnswer` without posting visible text to the chat:
+
+```lua
+ox.log:info("Callback automation bot initialized")
+
+-- Pattern 1: Inspect button callback payloads and click by data
+ox.on_message({ incoming = true }, function(event)
+    for _, row in ipairs(event.buttons) do
+        for _, btn in ipairs(row) do
+            if btn.is_callback and btn.callback_data then
+                -- Check for structured JSON command in button payload
+                if btn.callback_data:contains("START_DIAL_POST") then
+                    ox.log:info("Target dial callback found, clicking button...")
+                    -- Send callback answer with 0.5s delay
+                    event:click_button(btn.callback_data, 0.5)
+                    return
+                end
+            end
+        end
+    end
+end)
+
+-- Pattern 2: Click with raw JSON or callback string directly
+ox.on_message({ incoming = true, pattern = "Поиск партн[её]ра" }, function(event)
+    ox.log:info("Partner search prompt detected. Triggering callback query...")
+
+    -- Direct click with JSON payload
+    event:click_button('{"com":"START_DIAL_POST","data":"1108360"}', 1.0)
+end)
+
+-- Pattern 3: Standalone callback click on any message across chats
+function trigger_remote_action(target_chat_id, target_msg_id)
+    ox.click_button {
+        chat_id = target_chat_id,
+        message_id = target_msg_id,
+        data = '{"com":"START_DIAL_POST","data":"1108360"}',
+    }
+end
 ```
 
 ---

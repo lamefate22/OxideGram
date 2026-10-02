@@ -22,8 +22,15 @@
 --- Inline or Reply keyboard button representation.
 ---@class Button
 ---@field text string The display label or emoji on the button.
----@field type "callback" | "url" | "text" | "other" Type of button.
----@field data? string Binary callback payload data (for inline buttons).
+---@field row integer 1-based row index of the button in the keyboard layout.
+---@field col integer 1-based column index of the button in the keyboard row.
+---@field is_callback boolean `true` if this is an inline callback button (`messages.getBotCallbackAnswer`).
+---@field is_url boolean `true` if this button opens an external URL.
+---@field is_text boolean `true` if this is a standard reply keyboard button that sends chat text.
+---@field type "callback" | "url" | "text" | "other" Button type tag.
+---@field callback_data? string UTF-8 decoded callback payload data (for inline callback buttons).
+---@field data? string Alias for `callback_data`.
+---@field raw_data? string Raw binary string payload (for inline callback buttons).
 ---@field url? string Destination link (for URL buttons).
 
 --------------------------------------------------------------------------------

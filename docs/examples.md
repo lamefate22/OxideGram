@@ -5,15 +5,15 @@ title: Script Examples
 
 # Script Examples
 
-[Home](index.html) | [API](api.html) | [Filters](filters.html)
+[Home](index.html) | [API Reference](api.html) | [Message Filters](filters.html)
 
-This collection provides copy-ready, production-grade script examples for common Telegram automation patterns. Scripts can be placed in `data/bots/<name>.lua` or generated via the built-in template generator (`oxidegram template create`).
+This collection provides copy-ready, production-grade script examples for common Telegram automation patterns. Place these scripts in `data/bots/<name>.lua` or generate starting boilerplates with `oxidegram template create`.
 
 ---
 
-## 1. Echo Handler with Markdown Formatting
+## Echo Bot with Text Formatting
 
-A minimal handler that replies to private incoming text messages with formatted Markdown:
+Replies to incoming private messages with formatted Markdown quotes:
 
 ```lua
 ox.on_message({
@@ -36,9 +36,9 @@ end)
 
 ---
 
-## 2. Interactive Keyboard Auto-Clicker
+## Interactive Keyboard Auto-Clicker
 
-Simulates button interactions in third-party bots (e.g. captcha verification, daily check-ins, confirmation dialogs) via MTProto `GetBotCallbackAnswer` and reply keyboard simulation:
+Simulates button interactions in third-party bots (e.g. captchas, daily check-ins, confirmations) via MTProto `GetBotCallbackAnswer` and reply keyboard automation:
 
 ```lua
 ox.log:info("Keyboard automation handler active")
@@ -56,7 +56,7 @@ ox.on_message({ incoming = true }, function(event)
             ox.log:debug(string.format("Button [%d,%d]: '%s' [type: %s]", row_idx, col_idx, btn.text, btn.type))
 
             -- Match verification or confirmation prompts
-            local text_lower = btn.text:to_lower()
+            local text_lower = btn.text:lower()
             if text_lower:contains("verify") or text_lower:contains("confirm") or text_lower:contains("подтвердить") then
                 ox.log:info("Matching button detected. Clicking: " .. btn.text)
                 
@@ -72,9 +72,9 @@ end)
 
 ---
 
-## 3. Animated Progress and Status Updater
+## Animated Progress and Status Updater
 
-Demonstrates message editing, asynchronous non-blocking pauses, and final reaction feedback:
+Demonstrates message editing, asynchronous non-blocking delays, and final reaction feedback:
 
 ```lua
 ox.on_message({
@@ -102,9 +102,9 @@ end)
 
 ---
 
-## 4. Regex Matching with Positional and Named Captures
+## Regular Expression Parsing and Captures
 
-Demonstrates Rust-compatible regular expression parsing with named capture groups and typing indicators:
+Demonstrates Rust-compatible regular expressions with named capture groups and typing action indicators:
 
 ```lua
 ox.on_message({
@@ -140,7 +140,7 @@ end)
 
 ---
 
-## 5. Periodic Heartbeat and Background Tasks
+## Periodic Background Tasks and Heartbeat
 
 Demonstrates non-blocking background intervals, cancellation tokens, and storage state tracking:
 
@@ -153,9 +153,9 @@ local heartbeat_id = ox.set_interval(60.0, function()
     ox.log:info(string.format("Heartbeat #%d: Engine active and responsive", check_counter))
 end)
 
--- Command to inspect and stop the recurring task
+-- Command to stop the recurring task
 ox.on_message({ commands = "stopheartbeat", outgoing = true }, function(event)
-    local stopped = ox.clear_timer(heartbeat_id)
+    local stopped = ox.clear_interval(heartbeat_id)
     if stopped then
         event:reply("Heartbeat task successfully cancelled.")
     else
@@ -166,9 +166,9 @@ end)
 
 ---
 
-## 6. Media File Transfers (Image, Document, Voice)
+## Media File Transfers
 
-Demonstrates sending photos, uncompressed documents, and native voice notes with custom delays:
+Demonstrates sending photos, uncompressed documents, and native voice notes:
 
 ```lua
 ox.on_message({
@@ -187,83 +187,75 @@ ox.on_message({
     })
 
     -- 3. Send audio voice greeting
-    ox.send_voice(event.chat_id, "data/voice_note.ogg", 1.5)
+    ox.send_voice(event.chat_id, "data/voice_note.ogg", nil, 1.5)
 end)
 ```
 
 ---
 
-## 7. Multi-Step Dialog State Machine with Persistent Storage
+## Multi-Step Conversation Flow and State Management
 
-Demonstrates multi-turn state machines (`ox.flow`), step timeouts, session data retention (`ox.storage`), and interactive options:
+Demonstrates multi-turn state machines (`ox.flow`), command routing (`flow:command`), session data persistence (`ctx:set`/`ctx:get`), step timeouts, and global cancel handlers:
 
 ```lua
--- Session counter persisted across bot restarts
-local session_count = ox.storage.get("session_count", 0) + 1
-ox.storage.set("session_count", session_count)
-ox.log:info(string.format("Total bot sessions executed: %d", session_count))
-
--- Declare state machine with a 60-second idle step timeout
+-- Declare flow restricted to private chats with 60-second idle step timeout
 local dialog = ox.flow("onboarding_flow", {
+    private = true,
     timeout = 60,
 })
 
--- Shared memory preserved across all transitions
-dialog.data.user_info = {}
+-- Top-level slash command router
+dialog:command("start", function(event, ctx)
+    event:reply("Welcome! What is your username or callsign?")
+    return "ask_username"
+end)
 
--- Step 1: Greeting and trigger
-dialog:step("start", {
-    match = { "start", "привет", "hello" },
-    commands = "start",
-    action = function(event, ctx)
-        event:reply("Welcome! What is your username or callsign?")
-        return "ask_username"
-    end,
-})
-
--- Step 2: Receive username
+-- Step 1: Collect username
 dialog:step("ask_username", {
     action = function(event, ctx)
         local username = event.text:trim()
-        ctx.data.user_info.username = username
+        ctx:set("username", username)
 
-        event:reply(string.format("Got it, %s! Please choose your preferred notification frequency: [daily/weekly]", username))
+        event:reply(string.format("Got it, %s! Please choose your notification frequency: [daily/weekly]", username))
         return "choose_frequency"
     end,
     on_timeout = function(ctx)
-        ox.log:warn("Dialog step timed out waiting for username. Resetting state.")
+        ox.log:warn("Dialog step timed out waiting for username.")
     end,
 })
 
--- Step 3: Choose frequency
+-- Step 2: Choose frequency
 dialog:step("choose_frequency", {
     match = { "daily", "weekly", "ежедневно", "еженедельно" },
     action = function(event, ctx)
-        local freq = event.text:to_lower():trim()
-        ctx.data.user_info.frequency = freq
+        local freq = event.text:lower():trim()
+        local username = ctx:get("username", "Unknown")
 
-        -- Persist user configuration
-        ox.storage.set("configured_user_" .. tostring(event.sender_id), ctx.data.user_info)
+        -- Save to persistent storage across restarts
+        ox.storage.set("user_" .. tostring(event.sender_id), {
+            username = username,
+            frequency = freq,
+        })
 
-        event:reply(string.format("✅ Configuration complete!\nUsername: `%s`\nFrequency: `%s`", ctx.data.user_info.username, freq), {
+        event:reply(string.format("✅ Configuration complete!\nUsername: `%s`\nFrequency: `%s`", username, freq), {
             parse_mode = "markdown",
         })
-        return "start" -- return to idle state
+        ctx:reset()
     end,
 })
 
 -- Global cancellation trigger (works at any stage of the dialog)
-dialog:on_match({ "cancel", "стоп", "отмена", "/cancel" }, function(event)
-    dialog:reset(event.chat_id)
+dialog:on({ "cancel", "стоп", "отмена", "/cancel" }, function(event, ctx)
+    ctx:reset()
     event:reply("Dialog session cancelled. State has been reset.")
 end)
 ```
 
 ---
 
-## 8. Interactive Startup Configuration
+## Interactive Startup Configuration and File Prompt
 
-Demonstrates configuring bot operational parameters in the terminal before connecting to Telegram:
+Demonstrates configuring bot operational parameters in the terminal before connecting to Telegram, including file selection with autocomplete and validation:
 
 ```lua
 -- 1. Choice menu with arrow navigation and default selection
@@ -276,42 +268,78 @@ local target_mode = ox.select("Select operational mode:", {
 -- 2. Boolean confirmation prompt
 local auto_react = ox.confirm("Enable automatic emoji reactions?", true)
 
--- 3. String input prompt with default value
-local filter_tag = ox.input("Filter hashtag or keyword:", "#alerts")
+-- 3. File path prompt with tab-autocomplete and extension validation
+local config_file = ox.file("Path to custom dataset:", {
+    default = "data/dataset.json",
+    extensions = { "json", "toml" },
+    must_exist = true,
+})
 
-ox.log:info(string.format("Configuration loaded: mode=%s, auto_react=%s, tag=%s", target_mode, tostring(auto_react), filter_tag))
+ox.log:info(string.format("Config loaded: mode=%s, auto_react=%s, file=%s", target_mode, tostring(auto_react), config_file))
 
 ox.on_message({ incoming = true }, function(event)
-    if not event.text:contains(filter_tag) then
-        return
-    end
-
     if auto_react then
         event:react("👀", 0.3)
     end
 
     if target_mode == "echo" then
-        event:reply("Matched tag: " .. filter_tag)
+        event:reply("Dataset in use: " .. config_file)
     end
 end)
 ```
 
 ---
 
-## 9. Hot-Reload Workflow and Development Cycle
+## Named Arguments and String Utilities
 
-OxideGram monitors script files on disk and transparently hot-reloads code without interrupting active MTProto sessions:
+Demonstrates using named table arguments and enhanced string manipulation methods:
 
-1. Launch your bot via the CLI or runner:
+```lua
+ox.on_message({ incoming = true }, function(event)
+    local raw = event.text:trim()
+    
+    -- Check if empty or whitespace only
+    if raw:is_blank() then
+        return
+    end
+
+    -- Extract slash command and remainder arguments
+    local cmd, args = raw:extract_command("mybot")
+    if cmd == "shout" then
+        -- Pad and escape text
+        local clean_args = ox.escape_markdown(args)
+        local formatted = clean_args:pad_left(clean_args:len() + 2, "🔊 ")
+
+        -- Named table syntax
+        event:reply {
+            text = formatted,
+            parse_mode = "markdown",
+            delay = 0.5,
+        }
+    elseif cmd == "replace" then
+        -- Substring replacement with regex support
+        local masked = args:replace("\\d+", "###", true)
+        event:reply { text = "Masked: " .. masked }
+    end
+end)
+```
+
+---
+
+## Hot-Reload Workflow
+
+OxideGram monitors script files on disk and automatically hot-reloads code without interrupting active MTProto sessions:
+
+1. Launch your bot via the CLI:
    ```bash
-   oxidegram run my_bot
+   cargo run -- my_bot
    ```
-2. Open `data/bots/my_bot.lua` in your preferred editor (e.g. Zed or Visual Studio Code).
-3. Add a new command or modify an existing handler logic.
+2. Open `data/bots/my_bot.lua` in your editor (e.g. Zed or VS Code).
+3. Modify existing handler logic or add a new command.
 4. Save the file (`Ctrl+S`).
 5. OxideGram instantly logs:
    ```text
-   2026-10-01T20:30:12.123Z INFO oxidegram::infrastructure::lua::runner: Script change detected. Initiating hot-reload...
-   2026-10-01T20:30:12.145Z INFO oxidegram::infrastructure::lua::runner: Lua script hot-reloaded successfully
+   2026-10-02T10:15:12.123Z INFO oxidegram::infrastructure::lua::runner: Script change detected. Initiating hot-reload...
+   2026-10-02T10:15:12.145Z INFO oxidegram::infrastructure::lua::runner: Lua script hot-reloaded successfully
    ```
 6. The updated script logic takes effect immediately without reconnecting or re-authenticating with Telegram.

@@ -126,7 +126,7 @@ OxideGram provides a dual-layer logging architecture powered by `tracing` and `t
 - **Interactive Offline Simulator**: Test button clicking, regex routing, and dialog state transitions in a local terminal REPL without network connectivity.
 - **Dialog State Machine (`ox.flow`)**: Construct complex multi-step dialogs with per-step timeouts, branching conditions, and persistent state.
 - **Persistent Key-Value Storage (`ox.storage`)**: Store user preferences, counters, and session states in automatic JSON storage files (`data/storage/`).
-- **Interactive Startup Prompts**: Request runtime inputs via interactive terminal select menus (`ox.select`), yes/no confirmations (`ox.confirm`), and text prompts (`ox.input`).
+- **Interactive Startup Prompts**: Request runtime inputs via interactive terminal select menus (`ox.select`), yes/no confirmations (`ox.confirm`), file path prompts (`ox.file`), and text prompts (`ox.input`).
 - **Keyboard Button Automation**: Comprehensive support for inline and reply keyboards (`event.buttons`), with programmatic click execution (`event:click`).
 - **Rich Message Control**: Edit messages (`event:edit`), delete (`event:delete`), apply emoji reactions (`event:react`), pin messages (`event:pin`), and forward (`ox.forward_message`).
 - **Media File Transfers**: Send photos, uncompressed files, audio tracks, and native voice notes (`ox.send_image`, `ox.send_document`, `ox.send_audio`, `ox.send_voice`).
@@ -141,7 +141,7 @@ OxideGram includes full **LuaCATS** (Lua Language Server / EmmyLua) type definit
 When opening the project in **Zed** (via `.zed/settings.json`), **Visual Studio Code** (with the `sumneko.lua` extension), or **Neovim** (via `.luarc.json`):
 - **Autocomplete & Signatures**: Type `ox.` or `event:` to see all available methods, descriptions, parameter types, and inline code examples.
 - **Type Checking**: Full diagnostics for configuration tables, message options, and event properties.
-- **Zero Configuration Warnings**: Global functions (`ox`, `contains`, `starts_with`, `ends_with`, `split`, `trim`) are pre-configured in project settings.
+- **Zero Configuration Warnings**: Global symbols (`ox`) and string extensions are pre-configured in project settings.
 
 ---
 

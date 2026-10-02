@@ -83,11 +83,11 @@ ox.on_message({
     incoming = true,
     commands = { "hello", "hi" }
 }, function(event)
-    ox.send_message(event.chat_id, "Hello from OxideGram!", 0)
+    event:reply("Hello from OxideGram!")
 end)
 ```
 
-All specified filters are combined with logical AND. Both `ox` and the legacy alias `nox` refer to the same API table.
+All specified filters are combined with logical AND.
 
 See the [scripting engine documentation](docs/index.md) for the complete API, filter reference, event fields, behavior notes, and examples. Copy-ready scripts are available in [`examples/bots/`](examples/bots/).
 

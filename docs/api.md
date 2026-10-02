@@ -5,481 +5,1271 @@ title: API Reference
 
 # API Reference
 
-[Home](index.html) | [Filters](filters.html) | [Examples](examples.html)
+[Home](index.html) | [Filters](filters.html) | [Cookbook & Examples](examples.html)
 
-The OxideGram automation engine provides two primary abstractions for script authors:
-- **`ox` global table**: Global functions for message dispatching, client operations, media transfers, timing, persistent storage, and state machines.
-- **`event` context object**: Contextual message representations passed directly to message listener callbacks and dialog step handlers.
+The OxideGram scripting engine provides two core programming interfaces:
+- **`ox` global table**: Functions for message transmission, media handling, interactive console prompts, persistent storage, scheduling, string manipulation, and state machines.
+- **`event` context object**: Enriched message representation passed to message listeners and dialog flow action handlers.
 
 > [!NOTE]
-> All methods on `Flow`, `FlowContext`, `event`, `ox.storage`, and `ox.log` support both method call syntax with a colon (`object:method(...)`) and standard function call syntax (`object.method(...)`).
+> All object methods on `event`, `flow`, `ctx`, `ox.storage`, and `ox.log` support both colon syntax (`object:method(...)`) and dot syntax (`object.method(...)`).
+> Most functions support both sequential positional arguments and single-table named argument syntax (e.g. `ox.send_message { chat_id = ..., text = ... }`).
 
 ---
 
-## Global Table `ox`
+## Event Handling
 
-### Event Handlers
+### `ox.on_message`
 
-#### `ox.on_message([filters, ]callback)`
+Registers a message event listener. The callback executes whenever an incoming or outgoing message satisfies the optional filter criteria.
 
-Registers an incoming or outgoing message listener. If a filter table is provided, the callback only executes when every specified filter condition is met.
+#### Syntax
 
 ```lua
--- Handler with explicit filter criteria
+ox.on_message([filter, ]callback)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `filter` | `table` | No | Predicate table restricting which messages trigger the handler. | `nil` (matches all messages) |
+| `callback` | `function(event)` | Yes | Asynchronous function executed when a message matches. | — |
+
+#### Examples
+
+```lua
+-- Example 1: Catch-all listener logging every message
+ox.on_message(function(event)
+    ox.log.info(string.format("Chat %d: %s", event.chat_id, event.text))
+end)
+
+-- Example 2: Filter by chat type and slash command
 ox.on_message({
     incoming = true,
     private = true,
     commands = "start",
 }, function(event)
-    event.reply("Welcome to OxideGram! 🚀", { parse_mode = "markdown" })
+    event:reply("Welcome to OxideGram!")
 end)
 
--- Catch-all handler without filters
-ox.on_message(function(event)
-    ox.log.info(string.format("Message from chat %d: %s", event.chat_id, event.text))
+-- Example 3: Filter by regex pattern with capture groups
+ox.on_message({
+    incoming = true,
+    pattern = "^/calc\\s+(?P<expr>.+)$",
+}, function(event)
+    local expr = event.captures["expr"]
+    event:reply("Expression: " .. expr)
 end)
 ```
 
 ---
 
-### Message Operations
+## Messaging
 
-#### Message Options
+### `ox.send_message`
 
-Functions accepting an optional `options` argument accept either:
-- A `number`: interpreted as an execution delay in seconds (e.g. `1.5`).
-- A `table`: with fine-grained formatting and timing options:
-  - `delay` (*number*, optional): Delay in seconds before executing the request (with automatic human-like jitter).
-  - `parse_mode` (*string*, optional): Text formatting parser: `"markdown"` (or `"md"`) or `"html"`.
+Sends a text message to a Telegram dialog or user. Automatically handles rate-limiting (`FloodWait`) with exponential backoff.
 
-#### `ox.send_message(chat_id, text[, options_or_delay[, extra_delay]])`
-
-Sends a text message to the specified chat ID. Automatically handles Telegram `FloodWait` by backing off and retrying transparently.
+#### Syntax
 
 ```lua
--- Simple message without delay
-ox.send_message(event.chat_id, "Hello from OxideGram!")
+ox.send_message(chat_id, text[, options])
+ox.send_message(options_table)
+```
 
--- Formatted Markdown message with a 1.0 second delay
-ox.send_message(event.chat_id, "*Bold title*\n_Italic description_", {
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `chat_id` | `integer` | Yes | Target Telegram peer / chat ID. | — |
+| `text` | `string` | Yes | Text content of the message. | — |
+| `options` | `table` \| `number` | No | Configuration table or numeric delay in seconds. | `nil` |
+| `options.delay` | `number` | No | Delay in seconds before sending (with natural jitter). | `0` |
+| `options.parse_mode` | `string` | No | Text parser: `"markdown"` (or `"md"`) or `"html"`. | `nil` (plain text) |
+
+#### Examples
+
+```lua
+-- Example 1: Basic message
+ox.send_message(123456789, "Hello from OxideGram!")
+
+-- Example 2: Markdown formatting with delay
+ox.send_message(123456789, "*System Notification*\nTask `sync` completed.", {
     parse_mode = "markdown",
     delay = 1.0,
 })
 
--- Formatted HTML message
-ox.send_message(event.chat_id, "<b>Alert:</b> <code>System online</code>", {
+-- Example 3: HTML formatting
+ox.send_message(123456789, "<b>Status:</b> <code>Online</code>", {
     parse_mode = "html",
-    delay = 0.5,
 })
+
+-- Example 4: Named table syntax
+ox.send_message {
+    chat_id = 123456789,
+    text = "Report ready for download.",
+    delay = 0.5,
+}
 ```
 
-#### `ox.edit_message(chat_id, message_id, new_text[, options])`
+---
 
-Edits the text of an existing message previously sent by the userbot account.
+### `ox.edit_message`
+
+Edits the text and formatting of an existing message sent by your userbot.
+
+#### Syntax
 
 ```lua
-local status = ox.send_message(event.chat_id, "Processing request...")
-ox.sleep(1.5)
-ox.edit_message(event.chat_id, event.message_id, "Processing complete! Result: *Success*", {
-    parse_mode = "markdown",
-})
+ox.edit_message(chat_id, message_id, new_text[, options])
+ox.edit_message(options_table)
 ```
 
-#### `ox.delete_message(chat_id, message_id[, delay])`
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `chat_id` | `integer` | Yes | Peer identifier of the chat containing the message. | — |
+| `message_id` | `integer` | Yes | Numeric ID of the message to edit. | — |
+| `new_text` | `string` | Yes | New message text. | — |
+| `options` | `table` \| `number` | No | Configuration table or numeric delay in seconds. | `nil` |
+| `options.delay` | `number` | No | Delay in seconds before editing. | `0` |
+| `options.parse_mode` | `string` | No | Text parser: `"markdown"` or `"html"`. | `nil` |
+
+#### Examples
+
+```lua
+-- Example 1: Basic edit
+ox.edit_message(event.chat_id, event.message_id, "Processing completed.")
+
+-- Example 2: Edit with Markdown formatting and delay
+ox.edit_message(event.chat_id, event.message_id, "*Updated Status:* _Success_", {
+    parse_mode = "markdown",
+    delay = 0.5,
+})
+
+-- Example 3: Named table syntax
+ox.edit_message {
+    chat_id = event.chat_id,
+    message_id = event.message_id,
+    text = "<code>Error: Connection timeout</code>",
+    parse_mode = "html",
+}
+```
+
+---
+
+### `ox.delete_message`
 
 Deletes a single message by ID.
 
+#### Syntax
+
 ```lua
--- Delete immediately
+ox.delete_message(chat_id, message_id_or_ids[, delay])
+ox.delete_message(options_table)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `chat_id` | `integer` | Yes | Peer identifier of the chat. | — |
+| `message_id_or_ids` | `integer` \| `integer[]` | Yes | Single message ID or array of numeric message IDs to delete. | — |
+| `delay` | `number` | No | Optional delay in seconds before deleting. | `0` |
+
+#### Examples
+
+```lua
+-- Example 1: Immediate single message deletion
 ox.delete_message(event.chat_id, event.message_id)
 
--- Delete after a 5-second countdown
+-- Example 2: Delete multiple messages at once
+ox.delete_message(event.chat_id, { 101, 102, 103 })
+
+-- Example 3: Delayed self-destruct after 5 seconds
 ox.delete_message(event.chat_id, event.message_id, 5.0)
+
+-- Example 4: Named table syntax for single message
+ox.delete_message {
+    chat_id = event.chat_id,
+    message_id = event.message_id,
+    delay = 3.0,
+}
+
+-- Example 5: Named table syntax for multiple messages
+ox.delete_message {
+    chat_id = event.chat_id,
+    ids = { 101, 102, 103 },
+    delay = 1.0,
+}
 ```
 
-#### `ox.delete_messages(chat_id, message_ids[, delay])`
+---
 
-Deletes multiple messages simultaneously within a dialog.
-
-```lua
-local ids_to_purge = { 101, 102, 103, 104 }
-ox.delete_messages(event.chat_id, ids_to_purge, 1.0)
-```
-
-#### `ox.send_reaction(chat_id, message_id, emoji[, delay])` (Alias: `ox.react`)
+### `ox.react`
 
 Applies an emoji reaction to a specified message.
 
+#### Syntax
+
 ```lua
-ox.send_reaction(event.chat_id, event.message_id, "👍")
-ox.react(event.chat_id, event.message_id, "🔥", 0.5)
+ox.react(chat_id, message_id, emoji[, delay])
+ox.react(options_table)
 ```
 
-#### `ox.pin_message(chat_id, message_id[, delay])`
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `chat_id` | `integer` | Yes | Peer identifier of the chat. | — |
+| `message_id` | `integer` | Yes | Target message ID. | — |
+| `emoji` | `string` | Yes | Reaction emoji (e.g. `"👍"`, `"🔥"`, `"❤️"`). | — |
+| `delay` | `number` | No | Delay in seconds before reacting. | `0` |
+
+#### Examples
+
+```lua
+-- Example 1: Instant reaction
+ox.react(event.chat_id, event.message_id, "👍")
+
+-- Example 2: React with delay
+ox.react(event.chat_id, event.message_id, "🔥", 0.5)
+
+-- Example 3: Named table syntax
+ox.react {
+    chat_id = event.chat_id,
+    message_id = event.message_id,
+    emoji = "🎉",
+    delay = 0.2,
+}
+```
+
+---
+
+### `ox.pin_message`
 
 Pins a message in the specified chat.
 
+#### Syntax
+
 ```lua
-ox.pin_message(event.chat_id, event.message_id)
-ox.pin_message(event.chat_id, event.message_id, 1.0)
+ox.pin_message(chat_id, message_id[, delay])
+ox.pin_message(options_table)
 ```
 
-#### `ox.forward_message(to_chat_id, from_chat_id, message_id[, delay])`
+#### Parameters
 
-Forwards an existing message from one chat into another.
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `chat_id` | `integer` | Yes | Peer identifier of the chat. | — |
+| `message_id` | `integer` | Yes | Message ID to pin. | — |
+| `delay` | `number` | No | Delay in seconds before pinning. | `0` |
+
+#### Examples
 
 ```lua
-local archive_channel = -1001234567890
-ox.forward_message(archive_channel, event.chat_id, event.message_id, 0.5)
+-- Example 1: Pin immediately
+ox.pin_message(event.chat_id, event.message_id)
+
+-- Example 2: Pin with delay via named table
+ox.pin_message {
+    chat_id = event.chat_id,
+    message_id = event.message_id,
+    delay = 1.0,
+}
 ```
 
 ---
 
-### Media Operations
+### `ox.forward_message`
 
-#### `ox.send_image(chat_id, path[, caption[, options]])`
+Forwards an existing message from one chat to another.
 
-Uploads and sends an image file from the local filesystem (`.png`, `.jpg`, `.jpeg`, `.webp`).
+#### Syntax
 
 ```lua
-ox.send_image(event.chat_id, "data/banner.png", "System Status Dashboard", {
+ox.forward_message(to_chat_id, from_chat_id, message_id[, delay])
+ox.forward_message(options_table)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `to_chat_id` | `integer` | Yes | Destination chat ID. | — |
+| `from_chat_id` | `integer` | Yes | Source chat ID. | — |
+| `message_id` | `integer` | Yes | Message ID to forward. | — |
+| `delay` | `number` | No | Delay in seconds before forwarding. | `0` |
+
+#### Examples
+
+```lua
+-- Example 1: Forward to archive channel
+ox.forward_message(-1001234567890, event.chat_id, event.message_id)
+
+-- Example 2: Named table syntax
+ox.forward_message {
+    to_chat_id = -1001234567890,
+    from_chat_id = event.chat_id,
+    message_id = event.message_id,
+    delay = 0.5,
+}
+```
+
+---
+
+### `ox.send_typing`
+
+Broadcasts a temporary chat action status (e.g. typing indicator) to emulate human activity.
+
+#### Syntax
+
+```lua
+ox.send_typing(chat_id[, action])
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `chat_id` | `integer` | Yes | Target chat ID. | — |
+| `action` | `string` | No | Action type: `"typing"`, `"cancel"`, `"record_video"`, `"upload_video"`, `"record_voice"`, `"upload_voice"`, `"upload_document"`, `"choose_sticker"`. | `"typing"` |
+
+#### Examples
+
+```lua
+-- Example 1: Display typing indicator before reply
+ox.send_typing(event.chat_id)
+ox.sleep_random(1.0, 2.0)
+event:reply("Here is your answer!")
+
+-- Example 2: Explicit upload action
+ox.send_typing(event.chat_id, "upload_document")
+```
+
+---
+
+### `ox.click_button`
+
+Simulates clicking an inline callback button or pressing a regular reply keyboard button.
+
+#### Syntax
+
+```lua
+ox.click_button(chat_id, message_id, data)
+ox.click_button(options_table)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `chat_id` | `integer` | Yes | Chat ID containing the button. | — |
+| `message_id` | `integer` | Yes | Message ID containing the keyboard. | — |
+| `data` | `string` | Yes | Callback data string of the button. | — |
+
+#### Examples
+
+```lua
+-- Example 1: Click button by callback payload
+ox.click_button(event.chat_id, event.message_id, "agree_terms")
+
+-- Example 2: Named table syntax
+ox.click_button {
+    chat_id = event.chat_id,
+    message_id = event.message_id,
+    data = "page_next",
+}
+```
+
+---
+
+## Media
+
+### `ox.send_image`
+
+Uploads and sends an image file (`.png`, `.jpg`, `.jpeg`, `.webp`) from the local filesystem.
+
+#### Syntax
+
+```lua
+ox.send_image(chat_id, path[, caption[, options]])
+ox.send_image(options_table)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `chat_id` | `integer` | Yes | Target chat ID. | — |
+| `path` | `string` | Yes | Filesystem path to the image file. | — |
+| `caption` | `string` | No | Optional caption text attached to the photo. | `nil` |
+| `options` | `table` \| `number` | No | Configuration table or numeric delay in seconds. | `nil` |
+| `options.delay` | `number` | No | Delay in seconds before sending. | `0` |
+| `options.parse_mode` | `string` | No | Caption formatting parser (`"markdown"` or `"html"`). | `nil` |
+
+#### Examples
+
+```lua
+-- Example 1: Send image with caption
+ox.send_image(event.chat_id, "data/banner.png", "System Status Dashboard")
+
+-- Example 2: Image with formatted caption and delay
+ox.send_image(event.chat_id, "data/chart.png", "*Weekly Report Summary*", {
     parse_mode = "markdown",
     delay = 1.0,
 })
+
+-- Example 3: Named table syntax
+ox.send_image {
+    chat_id = event.chat_id,
+    path = "data/photo.jpg",
+    caption = "<b>User Avatar</b>",
+    parse_mode = "html",
+}
 ```
 
-#### `ox.send_document(chat_id, path[, caption[, options]])`
+---
 
-Uploads and sends an uncompressed file or document (`.pdf`, `.zip`, `.csv`, `.txt`).
+### `ox.send_document`
+
+Uploads and sends a generic file or document (`.pdf`, `.zip`, `.csv`, `.txt`, etc.).
+
+#### Syntax
 
 ```lua
-ox.send_document(event.chat_id, "data/export.csv", "Exported records", {
-    delay = 0.5,
-})
+ox.send_document(chat_id, path[, caption[, options]])
+ox.send_document(options_table)
 ```
 
-#### `ox.send_audio(chat_id, path[, caption[, options]])`
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `chat_id` | `integer` | Yes | Target chat ID. | — |
+| `path` | `string` | Yes | Filesystem path to the document. | — |
+| `caption` | `string` | No | Optional caption text. | `nil` |
+| `options` | `table` \| `number` | No | Options table or numeric delay in seconds. | `nil` |
+
+#### Examples
+
+```lua
+-- Example 1: Send document
+ox.send_document(event.chat_id, "data/export.csv", "Exported database records")
+
+-- Example 2: Named table syntax
+ox.send_document {
+    chat_id = event.chat_id,
+    path = "data/archive.zip",
+    caption = "Backup archive",
+    delay = 1.5,
+}
+```
+
+---
+
+### `ox.send_audio`
 
 Uploads and sends an audio track (`.mp3`, `.m4a`, `.flac`).
 
+#### Syntax
+
 ```lua
-ox.send_audio(event.chat_id, "data/soundtrack.mp3", "Theme Song", {
+ox.send_audio(chat_id, path[, caption[, options]])
+ox.send_audio(options_table)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `chat_id` | `integer` | Yes | Target chat ID. | — |
+| `path` | `string` | Yes | Filesystem path to audio file. | — |
+| `caption` | `string` | No | Optional caption text. | `nil` |
+| `options` | `table` \| `number` | No | Options table or numeric delay. | `nil` |
+
+#### Examples
+
+```lua
+ox.send_audio(event.chat_id, "media/podcast.mp3", "Episode 12")
+
+ox.send_audio {
+    chat_id = event.chat_id,
+    path = "media/song.flac",
+    caption = "*Hi-Fi Audio Track*",
     parse_mode = "markdown",
+}
+```
+
+---
+
+### `ox.send_voice`
+
+Transmits an audio file (`.ogg` with Opus codec) as a native playable Telegram voice message.
+
+#### Syntax
+
+```lua
+ox.send_voice(chat_id, path[, caption[, options]])
+ox.send_voice(options_table)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `chat_id` | `integer` | Yes | Target chat ID. | — |
+| `path` | `string` | Yes | Filesystem path to voice `.ogg` file. | — |
+| `caption` | `string` | No | Optional caption text. | `nil` |
+| `options` | `table` \| `number` | No | Options table or delay in seconds. | `nil` |
+
+#### Examples
+
+```lua
+ox.send_voice(event.chat_id, "data/greeting.ogg")
+
+ox.send_voice {
+    chat_id = event.chat_id,
+    path = "data/memo.ogg",
+    delay = 1.0,
+}
+```
+
+---
+
+## Interactive Input
+
+Interactive prompt functions execute during script startup and configuration, prompting the operator via the console before the bot begins processing messages.
+
+### `ox.input`
+
+Prompts the operator for text input in the terminal.
+
+#### Syntax
+
+```lua
+ox.input(prompt[, default])
+ox.input(options_table)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `prompt` | `string` | Yes | Text prompt shown to the user. | — |
+| `default` | `string` | No | Default fallback value when Enter is pressed without typing. | `nil` |
+
+#### Examples
+
+```lua
+-- Example 1: Basic text prompt
+local username = ox.input("Enter target username:")
+
+-- Example 2: Text prompt with default fallback
+local api_url = ox.input("API Server URL:", "https://api.example.com")
+
+-- Example 3: Named table syntax
+local bot_tag = ox.input {
+    prompt = "Bot instance tag:",
+    default = "prod-1",
+}
+```
+
+---
+
+### `ox.select`
+
+Renders an interactive terminal selection menu with arrow key navigation, search filtering, and default cursor positioning.
+
+#### Syntax
+
+```lua
+ox.select(prompt, options[, default])
+ox.select(options_table)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `prompt` | `string` | Yes | Prompt label displayed in the terminal. | — |
+| `options` | `(string \| table)[]` | Yes | Array of strings or tables with `label` and `value`. | — |
+| `default` | `string` | No | Default option pre-selected by cursor. | First option |
+
+#### Examples
+
+```lua
+-- Example 1: String array
+local mode = ox.select("Choose operating mode:", { "fast", "safe", "stealth" }, "safe")
+
+-- Example 2: Key-value objects with labels and underlying values
+local target = ox.select("Select destination channel:", {
+    { label = "General Chat (@general)", value = "@general" },
+    { label = "VIP Group (@vip_members)", value = "@vip_members" },
+    { label = "Debug Sandbox (@sandbox)", value = "@sandbox" },
+}, "@general")
+
+-- Example 3: Named table syntax
+local choice = ox.select {
+    prompt = "Desired action:",
+    options = { "start", "stop", "restart" },
+    default = "start",
+}
+```
+
+---
+
+### `ox.confirm`
+
+Prompts the operator for a boolean yes/no confirmation in the terminal.
+
+#### Syntax
+
+```lua
+ox.confirm(prompt[, default])
+ox.confirm(options_table)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `prompt` | `string` | Yes | Question displayed in the terminal. | — |
+| `default` | `boolean` | No | Default value when pressing Enter. | `true` |
+
+#### Examples
+
+```lua
+-- Example 1: Confirm with default true (Y/n)
+local enable_stats = ox.confirm("Enable metrics reporting?", true)
+
+-- Example 2: Confirm with default false (y/N)
+local purge_storage = ox.confirm("Purge local storage database?", false)
+
+-- Example 3: Named table syntax
+local proceed = ox.confirm {
+    prompt = "Continue execution?",
+    default = true,
+}
+```
+
+---
+
+### `ox.file`
+
+Prompts the operator for a filesystem path with interactive **tab-autocomplete**, path normalization, and automatic validation (existence check and extension filtering).
+
+#### Syntax
+
+```lua
+ox.file(prompt[, options_or_default])
+ox.file(options_table)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `prompt` | `string` | Yes | Prompt label displayed in the terminal. | — |
+| `options_or_default` | `table` \| `string` | No | Configuration options table or default path string. | `{}` |
+| `options.default` | `string` | No | Fallback file path if user presses Enter without typing. | `nil` |
+| `options.must_exist` | `boolean` | No | Validates that the file exists on disk. | `true` |
+| `options.extensions` | `string[]` \| `string` | No | Array of allowed extensions without dot (e.g. `{"json", "toml"}`). | `nil` (any extension) |
+
+#### Examples
+
+```lua
+-- Example 1: Request path with default and extension filter
+local config_path = ox.file("Path to configuration file:", {
+    default = "data/config.json",
+    extensions = { "json", "toml" },
+    must_exist = true,
+})
+
+-- Example 2: Prompt with simple default string fallback
+local dataset = ox.file("Dataset path:", "data/default.csv")
+
+-- Example 3: Prompt for an export output path (does not need to exist yet)
+local export_file = ox.file("Output CSV path:", {
+    default = "reports/export.csv",
+    must_exist = false,
+    extensions = { "csv" },
+})
+
+-- Example 4: Named table syntax
+local script_file = ox.file {
+    prompt = "Path to Lua bot script:",
+    extensions = "lua",
+    must_exist = true,
+}
+```
+
+---
+
+## Dialog Flow
+
+The Dialog Flow engine provides multi-step finite state machines and top-level command routing, replacing ad-hoc message listeners for structured conversations.
+
+### `ox.flow`
+
+Creates or accesses a named dialog flow manager.
+
+#### Syntax
+
+```lua
+local flow = ox.flow(name[, options])
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `name` | `string` | Yes | Unique identifier for the flow. | — |
+| `options` | `table` | No | Flow configuration and conversation filters. | `{}` |
+| `options.timeout` | `number` | No | Inactivity timeout in seconds before current step resets. | `nil` |
+| `options.initial` | `string` | No | Explicit name of starting step. | First registered step |
+| `options.chats` | `integer` \| `integer[]` | No | Restrict flow to specific chat ID(s). | `nil` |
+| `options.senders` | `integer` \| `integer[]` | No | Restrict flow to specific sender ID(s). | `nil` |
+| `options.incoming` | `boolean` | No | Match incoming messages (`true`) or outgoing (`false`). | `true` |
+| `options.private` | `boolean` | No | Match private 1-on-1 chats. | `nil` |
+| `options.group` | `boolean` | No | Match basic group chats. | `nil` |
+| `options.channel` | `boolean` | No | Match supergroups and channels. | `nil` |
+
+---
+
+### `flow:command`
+
+Registers a top-level slash command router that triggers an action and optionally transitions the conversation into a multi-step sequence.
+
+#### Syntax
+
+```lua
+flow:command(commands, action)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `commands` | `string` \| `string[]` | Yes | Command name or list of commands without slash (e.g. `"start"` or `{"help", "info"}`). | — |
+| `action` | `function(event, ctx)` | Yes | Action handler. Returning a step name transitions to that step. | — |
+
+#### Examples
+
+```lua
+local bot = ox.flow("assistant", { private = true })
+
+bot:command("start", function(event, ctx)
+    ctx:set("attempts", 0)
+    event:reply("Welcome! Please enter your access code:")
+    return "verify_code"
+end)
+
+bot:command({ "help", "info" }, function(event, ctx)
+    event:reply("Available commands: /start, /cancel, /status")
+end)
+```
+
+---
+
+### `flow:on`
+
+Registers a top-level keyword or regex pattern matcher.
+
+#### Syntax
+
+```lua
+flow:on(pattern_or_keywords, action)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `pattern_or_keywords` | `string` \| `string[]` | Yes | Substring or regex pattern. | — |
+| `action` | `function(event, ctx)` | Yes | Handler function. Returning a step name transitions to that step. | — |
+
+#### Examples
+
+```lua
+bot:on("cancel", function(event, ctx)
+    ctx:reset()
+    event:reply("Conversation cancelled.")
+end)
+```
+
+---
+
+### `flow:step`
+
+Registers a named step in the state machine.
+
+#### Syntax
+
+```lua
+flow:step(step_name, config)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `step_name` | `string` | Yes | Unique name of the step (e.g. `"ask_age"`). | — |
+| `config` | `table` | Yes | Step configuration table. | — |
+| `config.action` | `function(event, ctx)` | Yes | Handler executed when message arrives during this step. | — |
+| `config.match` | `string` \| `string[]` | No | Substring filter required to activate the step. | `nil` |
+| `config.commands` | `string` \| `string[]` | No | Slash command required to activate the step. | `nil` |
+| `config.pattern` | `string` | No | Regex pattern required to activate the step. | `nil` |
+| `config.timeout` | `number` | No | Per-step timeout override in seconds. | Flow timeout |
+| `config.on_timeout` | `function(ctx)` | No | Callback executed when this step times out. | `nil` |
+
+#### Context Object (`ctx`)
+
+| Method / Field | Type | Description |
+|:---|:---|:---|
+| `ctx:set(key, value)` | `function` | Saves a value in this conversation's session state. |
+| `ctx:get(key[, default])` | `function` | Retrieves a value from this conversation's session state. |
+| `ctx.data` | `table` | Raw key-value session storage table for this conversation. |
+| `ctx.current_step` | `string` | Name of the currently active step. |
+| `ctx:go_to(step_name)` | `function` | Transitions immediately to another step. |
+| `ctx:reset()` | `function` | Resets the conversation to the initial step. |
+
+#### Example
+
+```lua
+local quiz = ox.flow("quiz_flow", { timeout = 60 })
+
+quiz:command("start", function(event, ctx)
+    event:reply("Question 1: What is the capital of France?")
+    return "q1"
+end)
+
+quiz:step("q1", {
+    action = function(event, ctx)
+        if event.text:trim():lower() == "paris" then
+            ctx:set("score", 1)
+            event:reply("Correct! Question 2: What is 2 + 2?")
+            return "q2"
+        else
+            event:reply("Incorrect! Try again:")
+            return "q1"
+        end
+    end,
+    on_timeout = function(ctx)
+        ox.log.warn("Quiz timed out waiting for answer.")
+    end,
+})
+
+quiz:step("q2", {
+    action = function(event, ctx)
+        local score = ctx:get("score", 0)
+        if event.text:trim() == "4" then
+            score = score + 1
+        end
+        event:reply(string.format("Quiz finished! Final score: %d/2", score))
+        ctx:reset()
+    end,
 })
 ```
 
-#### `ox.send_voice(chat_id, path[, delay])`
+---
 
-Uploads an `.ogg` file and transmits it as a native playable Telegram voice message.
+## Message Events
+
+Every message callback receives an enriched `event` table describing the Telegram message.
+
+### Event Properties
+
+| Property | Type | Description |
+|:---|:---|:---|
+| `event.text` | `string` | Text content of the message. |
+| `event.id` | `integer` | Unique integer identifier of the message. |
+| `event.message_id` | `integer` | Alias for `event.id`. |
+| `event.chat_id` | `integer` | Signed 64-bit peer ID of the chat / dialog. |
+| `event.sender_id` | `integer` | Signed 64-bit peer ID of the sender (`0` if anonymous). |
+| `event.incoming` | `boolean` | `true` if sent by another user, `false` if outgoing. |
+| `event.outgoing` | `boolean` | `true` if sent from your userbot account. |
+| `event.is_private` | `boolean` | `true` for 1-on-1 private user chats. |
+| `event.is_group` | `boolean` | `true` for basic Telegram groups. |
+| `event.is_channel` | `boolean` | `true` for broadcast channels and supergroups. |
+| `event.matches` | `string[]` | Positional capture groups extracted by a regex filter. |
+| `event.captures` | `table<string, string>` | Named capture groups extracted by a regex filter. |
+| `event.buttons` | `Button[][]` | 2D matrix of inline or reply keyboard buttons attached to this message. |
+
+---
+
+### `event:reply`
+
+Replies directly to this message with a quote (`reply_to`).
+
+#### Syntax
 
 ```lua
-ox.send_voice(event.chat_id, "data/greeting.ogg", 1.0)
+event:reply(text[, options])
+event:reply(options_table)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `text` | `string` | Yes | Reply message content. | — |
+| `options` | `table` \| `number` | No | Options table or numeric delay in seconds. | `nil` |
+| `options.delay` | `number` | No | Delay in seconds before sending. | `0` |
+| `options.parse_mode` | `string` | No | Formatting parser: `"markdown"` or `"html"`. | `nil` |
+
+#### Examples
+
+```lua
+-- Positional syntax
+event:reply("Acknowledged!")
+event:reply("*Bold acknowledgment*", { parse_mode = "markdown", delay = 0.5 })
+
+-- Named table syntax
+event:reply {
+    text = "Task completed.",
+    delay = 1.0,
+}
 ```
 
 ---
 
-### Keyboard Buttons
+### `event:edit`
 
-#### `ox.click_button(chat_id, message_id, query_or_index[, delay])`
+Edits this message with new text.
 
-Programmatically simulates clicking a button on an inline or reply keyboard attached to a message.
-
-- `query_or_index`: Exact or fuzzy button text (string) or 1-based sequential index (integer).
-- Automatically executes the MTProto `GetBotCallbackAnswer` procedure for inline callback buttons.
-- For reply keyboard buttons, automatically locates the matching button title and sends the response message.
+#### Syntax
 
 ```lua
--- Click button by label
-ox.click_button(event.chat_id, event.message_id, "Verify")
+event:edit(new_text[, options])
+event:edit(options_table)
+```
 
--- Click the first button in the keyboard with a 1.2 second delay
-ox.click_button(event.chat_id, event.message_id, 1, 1.2)
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `new_text` | `string` | Yes | New message content. | — |
+| `options` | `table` \| `number` | No | Options table or delay in seconds. | `nil` |
+
+#### Examples
+
+```lua
+event:edit("Processing finished.")
+event:edit { text = "<b>Updated</b>", parse_mode = "html" }
 ```
 
 ---
 
-### Timing & Delays
+### `event:delete`
 
-Timers execute non-blockingly inside the asynchronous runtime without stalling message reception.
+Deletes this message.
 
-#### `ox.sleep(seconds)`
-
-Asynchronously pauses execution in the current callback without blocking background update polling or other concurrent scripts.
+#### Syntax
 
 ```lua
-ox.sleep(2.5)
+event:delete([delay])
+event:delete(options_table)
 ```
 
-#### `ox.sleep_random(min_seconds, max_seconds)`
+#### Parameters
 
-Asynchronously pauses execution for a randomized duration between `min_seconds` and `max_seconds` with natural timing jitter.
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `delay` | `number` | No | Delay in seconds before deleting. | `0` |
 
-```lua
--- Wait between 1.0 and 3.5 seconds
-ox.sleep_random(1.0, 3.5)
-```
-
-#### `ox.set_timeout(seconds, callback) -> integer`
-
-Schedules a one-time callback after a specified duration in seconds. Returns a unique integer timer identifier.
+#### Examples
 
 ```lua
-local timer_id = ox.set_timeout(10.0, function()
-    ox.log.info("10-second delayed task executed")
-end)
-```
-
-#### `ox.set_interval(seconds, callback) -> integer`
-
-Schedules a recurring background callback executed repeatedly every `seconds`. Returns a unique integer timer identifier.
-
-```lua
-local ping_timer = ox.set_interval(60.0, function()
-    ox.log.info("Heartbeat tick: connection alive")
-end)
-```
-
-#### `ox.clear_timer(timer_id) -> boolean`
-
-Cancels an active interval or timeout by its ID. Returns `true` if the timer was found and cancelled.
-
-```lua
-ox.clear_timer(ping_timer)
+event:delete()
+event:delete(3.0)
+event:delete { delay = 3.0 }
 ```
 
 ---
 
-### Chat Actions
+### `event:react`
 
-#### `ox.send_typing(chat_id)`
+Sends an emoji reaction to this message.
 
-Sends an ephemeral typing indicator to the specified chat to mimic human behavior before sending a response.
+#### Syntax
+
+```lua
+event:react(emoji[, delay])
+event:react(options_table)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `emoji` | `string` | Yes | Reaction emoji string (e.g. `"👍"`). | — |
+| `delay` | `number` | No | Delay in seconds before reacting. | `0` |
+
+#### Examples
+
+```lua
+event:react("🔥")
+event:react { emoji = "❤️", delay = 0.5 }
+```
+
+---
+
+### `event:pin`
+
+Pins this message in the chat.
+
+#### Syntax
+
+```lua
+event:pin([delay])
+event:pin(options_table)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `delay` | `number` | No | Delay in seconds before pinning. | `0` |
+
+#### Examples
+
+```lua
+event:pin()
+event:pin { delay = 1.0 }
+```
+
+---
+
+### `event:click`
+
+Clicks a button on this message's keyboard by text label, substring, or 1-based index.
+
+#### Syntax
+
+```lua
+event:click(query_or_index[, delay])
+event:click(options_table)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `query_or_index` | `string` \| `integer` | Yes | Button label text or 1-based sequential button index. | — |
+| `delay` | `number` | No | Delay in seconds before clicking. | `0` |
+
+#### Examples
+
+```lua
+-- Click by label
+event:click("Accept")
+
+-- Click the first button with delay
+event:click(1, 0.5)
+
+-- Named table syntax
+event:click { query = "Next Page", delay = 1.0 }
+```
+
+---
+
+## Storage
+
+`ox.storage` provides persistent JSON key-value storage saved to `data/storage/<bot_name>.json`. Data is preserved across bot restarts.
+
+### Methods
+
+| Method | Parameters | Return Type | Description |
+|:---|:---|:---|:---|
+| `ox.storage.get(key, [default])` | `key: string`, `default?: any` | `any` | Retrieves a value, or `default` if missing. |
+| `ox.storage.set(key, value)` | `key: string`, `value: any` | `nil` | Stores a value (string, number, boolean, or table). |
+| `ox.storage.has(key)` | `key: string` | `boolean` | Checks if a key exists in storage. |
+| `ox.storage.delete(key)` | `key: string` | `boolean` | Deletes a key. Returns `true` if key existed. |
+| `ox.storage.all()` | — | `table` | Returns a table of all stored key-value pairs. |
+| `ox.storage.clear()` | — | `nil` | Deletes all stored data for this script. |
+
+#### Examples
+
+```lua
+-- Increment counter
+local visits = ox.storage.get("visits", 0) + 1
+ox.storage.set("visits", visits)
+ox.log.info("Visits count: " .. visits)
+
+-- Storing complex tables
+ox.storage.set("settings", {
+    auto_reply = true,
+    channels = { -100111111, -100222222 },
+})
+
+local cfg = ox.storage.get("settings")
+if cfg and cfg.auto_reply then
+    ox.log.info("Auto-reply enabled")
+end
+```
+
+---
+
+## Utilities and Timing
+
+### `ox.sleep`
+
+Asynchronously pauses execution without blocking the Tokio runtime or update processing.
+
+#### Syntax
+
+```lua
+ox.sleep(seconds)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `seconds` | `number` | Yes | Pause duration in seconds. | — |
+
+#### Example
 
 ```lua
 ox.send_typing(event.chat_id)
-ox.sleep_random(1.0, 2.5)
-event.reply("Generated response text.")
+ox.sleep(1.5)
+event:reply("Done.")
 ```
 
 ---
 
-### Logging
+### `ox.sleep_random`
 
-Writes structured log messages to stdout, the terminal UI, and rotating log files (`data/logs/`):
+Pauses execution for a random duration between `min` and `max` seconds.
 
-- `ox.log.info(message)`
-- `ox.log.warn(message)`
-- `ox.log.error(message)`
-- `ox.log.debug(message)`
+#### Syntax
 
 ```lua
-ox.log.info("Bot loaded successfully")
-ox.log.warn(string.format("Rate limit warning for chat %d", event.chat_id))
-ox.log.error("Failed to parse external payload")
-ox.log.debug("Internal cache state updated")
+ox.sleep_random(min, max)
+```
 
--- Also callable with colon syntax
-ox.log:info("Service operational")
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `min` | `number` | Yes | Minimum sleep duration in seconds. | — |
+| `max` | `number` | Yes | Maximum sleep duration in seconds. | — |
+
+#### Example
+
+```lua
+-- Humanized delay between 1.0 and 3.0 seconds
+ox.sleep_random(1.0, 3.0)
 ```
 
 ---
 
-### Interactive Prompts
+### `ox.choice`
 
-Interactive prompts allow userbot scripts to request runtime parameters directly in the terminal before connecting to Telegram.
+Picks a random element from a Lua array table.
 
-#### `ox.select(prompt, options[, default]) -> string`
-
-Renders an interactive selection menu with arrow key navigation, fuzzy filtering, and default selection cursor.
-
-`options` can be specified as:
-1. An array of strings: `{"text", "grades"}`
-2. An array of objects with distinct labels and return values: `{{ label = "...", value = "..." }}`
+#### Syntax
 
 ```lua
--- 1. Simple array of options
-local mode = ox.select("Select spam mode:", { "text", "grades" }, "text")
-
--- 2. Labeled options with explicit underlying values
-local target = ox.select("Choose destination:", {
-    { label = "General Chat (@general)", value = "@general" },
-    { label = "VIP Channel (@vip)", value = "@vip" },
-    { label = "Testing Sandbox (@sandbox)", value = "@sandbox" },
-}, "@general")
+local item = ox.choice(list)
 ```
 
-#### `ox.confirm(prompt[, default]) -> boolean`
+#### Parameters
 
-Prompts the user for a boolean yes/no confirmation in the terminal.
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `list` | `any[]` | Yes | Array table of elements. | — |
 
-```lua
-local delete_after = ox.confirm("Delete messages after sending?", true)
-if delete_after then
-    ox.log.info("Auto-delete mode enabled")
-end
-```
-
-#### `ox.input(prompt[, default_or_config]) -> string`
-
-Displays a text input prompt. If passed an options configuration table, functions as an interactive select menu.
+#### Example
 
 ```lua
--- Simple text prompt with default fallback
-local target_channel = ox.input("Target channel username:", "@my_channel")
-
--- Config table format
-local action = ox.input("Select startup action:", {
-    options = { "monitor", "relay", "audit" },
-    default = "monitor",
-})
+local replies = { "Hi!", "Hello!", "Greetings!", "Welcome!" }
+event:reply(ox.choice(replies))
 ```
 
 ---
 
-### Persistent Storage (`ox.storage`)
+### `ox.set_timeout` & `ox.clear_timeout`
 
-Persistent key-value JSON storage backed by disk (`data/storage/<bot_name>.json`). Data survives bot restarts, script reloads, and application crashes.
+Schedules a one-shot callback after a specified duration.
 
-Methods support both `ox.storage.method(...)` and `ox.storage:method(...)`:
-
-- `ox.storage.get(key[, default]) -> any`: Retrieves a stored value or returns the default fallback.
-- `ox.storage.set(key, value)`: Stores a value (string, number, boolean, or nested table).
-- `ox.storage.has(key) -> boolean`: Checks if a key exists in storage.
-- `ox.storage.delete(key) -> boolean`: Deletes a key from storage.
-- `ox.storage.all() -> table`: Returns all stored key-value pairs as a Lua table.
-- `ox.storage.clear()`: Purges all stored data for this script.
+#### Syntax
 
 ```lua
--- Counter persistence example
-local count = ox.storage.get("processed_messages", 0) + 1
-ox.storage.set("processed_messages", count)
-ox.log.info("Messages processed so far: " .. count)
-
--- Complex nested tables
-ox.storage.set("user_preferences", {
-    theme = "dark",
-    auto_reply = true,
-    keywords = { "help", "support", "pricing" },
-})
-
-local prefs = ox.storage.get("user_preferences")
-if prefs and prefs.auto_reply then
-    ox.log.info("Auto-reply preference is active")
-end
-
--- Inspecting all keys
-for key, val in pairs(ox.storage.all()) do
-    ox.log.debug(string.format("Storage [%s] = %s", key, tostring(val)))
-end
+local timer_id = ox.set_timeout(seconds, callback)
+ox.clear_timeout(timer_id)
 ```
 
----
+#### Parameters
 
-### State Machine (`ox.flow`)
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `seconds` | `number` | Yes | Duration in seconds before callback runs. | — |
+| `callback` | `function()` | Yes | Function called when timer expires. | — |
 
-The Dialog Flow engine enables declarative, multi-step finite state machines for complex multi-turn dialogs, questionnaires, and scenarios.
-
-#### `ox.flow(name[, options]) -> Flow`
-
-Constructs and registers a new state machine.
-
-Options table:
-- `target_chat` (*integer*, optional): Restricts the flow to a specific chat ID.
-- `target_chats` (*integer[]*, optional): Restricts the flow to a list of chat IDs.
-- `timeout` (*number*, optional): Maximum idle duration in seconds before the active step expires.
-- `initial` (*string*, optional): Explicit name of the starting step. If omitted, the first step registered via `flow:step` becomes initial.
-
-#### `Flow:step(name, config)`
-
-Defines a step in the state machine.
-
-Configuration table:
-- `match` (*string* or *string[]*, optional): Substrings to match in incoming message text.
-- `commands` (*string* or *string[]*, optional): Slash commands that activate this step (e.g. `"start"` or `{"start", "menu"}`).
-- `pattern` (*string*, optional): Regular expression pattern that activates this step.
-- `timeout` (*number*, optional): Per-step timeout override in seconds.
-- `on_timeout` (*function(ctx)*, optional): Callback executed when the step times out.
-- `next` (*string*, optional): Default next step name when `action` does not explicitly return one.
-- `action` (*function(event, ctx)*, required): Handler function executed when the step criteria match. Returning a step name transitions to that step. Returning `nil` remains in the current step.
-
-#### Step Context Object (`ctx`)
-- `ctx.step` (*string*): Name of the current step.
-- `ctx.data` (*table*): Shared context table persisted across all step transitions in this dialog.
-- `ctx:go_to(step_name)`: Programmatically transitions to another step.
-- `ctx:reset()`: Resets the flow to its initial step.
-
-#### `Flow:on_match(pattern, action)`
-
-Registers a global pattern or keyword trigger that executes regardless of the currently active step (e.g. cancellation commands).
-
-#### `Flow:go_to(step_name[, chat_id])`
-
-Manually transitions the state machine to a specific step.
-
-#### `Flow:reset([chat_id])`
-
-Resets the state machine for the specified chat (or all chats) to its initial step.
-
-#### `Flow:current_step([chat_id]) -> string?`
-
-Returns the name of the currently active step.
+#### Example
 
 ```lua
-local dialog = ox.flow("onboarding_flow", {
-    timeout = 45, -- 45-second timeout per step
-})
-
-dialog.data.answers = {}
-
--- 1. Initial Step
-dialog:step("ask_name", {
-    match = "start",
-    commands = "start",
-    action = function(event, ctx)
-        event.reply("Hello! What is your name?")
-        return "await_name"
-    end,
-})
-
--- 2. Collect Name Step
-dialog:step("await_name", {
-    action = function(event, ctx)
-        ctx.data.answers.name = event.text:trim()
-        event.reply(string.format("Nice to meet you, %s! Are you ready to proceed?", ctx.data.answers.name))
-        return "confirm"
-    end,
-    on_timeout = function(ctx)
-        ox.log.warn("User took too long to provide a name. Resetting dialog.")
-    end,
-})
-
--- 3. Confirmation Step
-dialog:step("confirm", {
-    match = { "да", "yes", "ready" },
-    action = function(event, ctx)
-        event.reply("Setup complete! Your account is configured.")
-        return "ask_name" -- loop back or end
-    end,
-})
-
--- Global abort trigger
-dialog:on_match({ "cancel", "abort", "стоп" }, function(event)
-    dialog:reset(event.chat_id)
-    event.reply("Operation cancelled. Dialog reset.")
+local timer_id = ox.set_timeout(10.0, function()
+    ox.log.info("10-second timeout executed.")
 end)
+
+-- Cancel if needed
+ox.clear_timeout(timer_id)
 ```
 
 ---
 
-### Process Control
+### `ox.set_interval` & `ox.clear_interval`
 
-#### `ox.stop()`
+Schedules a recurring callback that executes repeatedly every interval.
 
-Gracefully shuts down the bot's event loop and update stream.
+#### Syntax
+
+```lua
+local timer_id = ox.set_interval(seconds, callback)
+ox.clear_interval(timer_id)
+```
+
+#### Parameters
+
+| Parameter | Type | Required | Description | Default |
+|:---|:---|:---|:---|:---|
+| `seconds` | `number` | Yes | Interval in seconds between executions. | — |
+| `callback` | `function()` | Yes | Function called on each tick. | — |
+
+#### Example
+
+```lua
+local ping_id = ox.set_interval(60.0, function()
+    ox.log.info("Heartbeat ping: system alive.")
+end)
+
+-- Cancel with ox.clear_interval or ox.clear_timer
+ox.clear_interval(ping_id)
+-- ox.clear_timer(ping_id)
+```
+
+---
+
+### `ox.stop`
+
+Gracefully stops the bot's event loop and exits the application.
+
+#### Syntax
+
+```lua
+ox.stop()
+```
+
+#### Example
 
 ```lua
 ox.on_message({ commands = "shutdown", outgoing = true }, function(event)
-    event.reply("Shutting down OxideGram...")
+    event:reply("Shutting down...")
     ox.sleep(1.0)
     ox.stop()
 end)
@@ -487,171 +1277,110 @@ end)
 
 ---
 
-### Utility Helpers
+## String Manipulation
 
-#### String Extensions
+OxideGram enhances Lua strings with metatable methods (`str:method(...)`) and a dedicated `ox.string` table (`ox.string.method(...)`).
 
-All Lua strings have metatable methods attached for pattern-free text operations:
+### String Methods Reference
 
-- `str:contains(substring[, case_insensitive]) -> boolean`: Checks if substring is present (default case-insensitive: `true`).
-- `str:starts_with(prefix[, case_insensitive]) -> boolean`: Checks if string starts with prefix.
-- `str:ends_with(suffix[, case_insensitive]) -> boolean`: Checks if string ends with suffix.
-- `str:split([delimiter]) -> table`: Splits string into an array (default delimiter: `" "`).
-- `str:trim() -> string`: Trims whitespace from both ends.
-- `str:to_lower() -> string`: Converts string to lowercase.
-- `str:to_upper() -> string`: Converts string to uppercase.
+| Method | Parameters | Return Type | Description |
+|:---|:---|:---|:---|
+| `contains` | `(sub: string)` | `boolean` | Checks if string contains `sub` (case-insensitive by default). |
+| `starts_with` | `(prefix: string)` | `boolean` | Checks if string begins with `prefix`. |
+| `ends_with` | `(suffix: string)` | `boolean` | Checks if string concludes with `suffix`. |
+| `split` | `([delimiter: string])` | `string[]` | Splits string by delimiter (defaults to whitespace). |
+| `trim` | `()` | `string` | Strips leading and trailing whitespace. |
+| `replace` | `(target: string, replacement: string, [is_regex: boolean])` | `string` | Replaces occurrences of `target` with `replacement`. Set `is_regex = true` for regex matching. |
+| `strip_prefix` | `(prefix: string)` | `string` | Removes prefix from string if present. |
+| `strip_suffix` | `(suffix: string)` | `string` | Removes suffix from string if present. |
+| `pad_left` | `(length: integer, [pad_char: string])` | `string` | Pads string on the left up to `length`. |
+| `pad_right` | `(length: integer, [pad_char: string])` | `string` | Pads string on the right up to `length`. |
+| `is_empty` | `()` | `boolean` | Returns `true` if string is empty (`""`). |
+| `is_blank` | `()` | `boolean` | Returns `true` if string is empty or contains only whitespace. |
+| `escape_markdown` | `()` | `string` | Escapes special characters for Telegram MarkdownV2. |
+| `escape_html` | `()` | `string` | Escapes `&`, `<`, `>`, `"` for Telegram HTML mode. |
+| `extract_command` | `([bot_username: string])` | `string?, string` | Extracts command name without slash and trailing arguments. |
+| `lines` | `()` | `string[]` | Splits string into an array of lines. |
 
-These methods are also exposed as global functions: `contains(s, sub)`, `starts_with(s, prefix)`, `ends_with(s, suffix)`, `split(s, sep)`, and `trim(s)`.
+#### Examples
 
 ```lua
-local query = "  /search RUST ENGINE  "
-local clean = query:trim()               -- "/search RUST ENGINE"
-local parts = clean:split(" ")           -- { "/search", "RUST", "ENGINE" }
+-- 1. Cleaning and splitting input
+local text = "  /ban @spammer 10m flood  "
+local clean = text:trim()
+local cmd, args = clean:extract_command("mybot")
+-- cmd  == "ban"
+-- args == "@spammer 10m flood"
 
-if clean:starts_with("/search") and clean:contains("rust") then
-    ox.log.info("Search query matched: " .. parts[2])
+-- 2. Replacing substrings (literal and regex)
+local greeting = "Hello Alice!":replace("Alice", "Bob")
+-- greeting == "Hello Bob!"
+
+local masked = "Call 555-1234":replace("\\d+", "XXX", true)
+-- masked == "Call XXX-XXX"
+
+-- 3. Escaping user input for formatting
+local user_bio = "Look at this: *stars* & <tags>"
+local safe_md = ox.escape_markdown(user_bio)
+local safe_html = ox.escape_html(user_bio)
+
+-- 4. Padding strings
+local padded = ("42"):pad_left(6, "0")
+-- padded == "000042"
+
+-- 5. Checking blank strings
+local input = "   \n\t  "
+if input:is_blank() then
+    ox.log.warn("Empty user input provided")
 end
-```
-
-#### `ox.choice(array_table) -> any`
-
-Returns a uniformly distributed random item from a sequential array table.
-
-```lua
-local greetings = { "Hello!", "Hi there!", "Welcome aboard!", "Hey!" }
-local picked = ox.choice(greetings)
-```
-
-#### `ox.random_int(min, max) -> integer`
-
-Generates a secure pseudo-random integer in the closed interval `[min, max]`.
-
-```lua
-local delay_ms = ox.random_int(200, 800)
-local roll = ox.random_int(1, 6)
 ```
 
 ---
 
-## Message Event Object (`event`)
+## Logging
 
-Every message handler callback receives an enriched `event` table.
+`ox.log` writes structured logs to stdout, the terminal console, and rotating daily log files under `data/logs/`.
 
-### Event Properties
+### Methods
 
-| Field | Type | Description |
-| :--- | :--- | :--- |
-| `event.text` | string | Message text content (or empty string if non-text media). |
-| `event.id` / `event.message_id` | integer | Unique message identifier. |
-| `event.chat_id` | integer | Signed 64-bit peer identifier of the chat or dialog. |
-| `event.sender_id` | integer | Signed 64-bit peer identifier of the sender (`0` if anonymous channel message). |
-| `event.incoming` | boolean | `true` if the message was sent by another account. |
-| `event.outgoing` | boolean | `true` if the message was sent by your account. |
-| `event.is_private` | boolean | `true` for 1-on-1 private chats with users. |
-| `event.is_group` | boolean | `true` for basic group chats. |
-| `event.is_channel` | boolean | `true` for broadcast channels and supergroups. |
-| `event.matches` | string[] | Positional regex captures (`matches[1]`, `matches[2]`). |
-| `event.captures` | table | Named regex captures (`captures.id`, `captures.user`). |
-| `event.buttons` | Button[][] | 2D matrix of keyboard buttons attached to this message. |
+| Method | Parameters | Description |
+|:---|:---|:---|
+| `ox.log.info(message)` | `message: string` | Informational message. |
+| `ox.log.warn(message)` | `message: string` | Warning message. |
+| `ox.log.error(message)` | `message: string` | Error message. |
+| `ox.log.debug(message)` | `message: string` | Detailed debugging log (visible with `--verbose`). |
 
-### Button Representation (`event.buttons`)
-
-Each button in `event.buttons[row][col]` contains:
-- `btn.text` (*string*): Visible text label on the button.
-- `btn.type` (*string*): Button kind: `"callback"`, `"url"`, `"text"`, or `"other"`.
-- `btn.data` (*string*): Binary callback payload data (for inline buttons).
-- `btn.url` (*string*): Target hyperlink destination (for URL buttons).
+#### Examples
 
 ```lua
-ox.on_message({ incoming = true }, function(event)
-    if #event.buttons > 0 then
-        ox.log.info(string.format("Detected %d button rows", #event.buttons))
-        for row_idx, row in ipairs(event.buttons) do
-            for col_idx, btn in ipairs(row) do
-                ox.log.debug(string.format("Btn [%d,%d]: '%s' (%s)", row_idx, col_idx, btn.text, btn.type))
-            end
-        end
-    end
-end)
-```
+ox.log.info("Bot loaded successfully.")
+ox.log.warn("Rate limit threshold approaching.")
+ox.log.error("Failed to connect to backend service.")
+ox.log.debug("Internal cache state: " .. tostring(cached_count))
 
-### Event Methods
-
-Methods on `event` support both `event:method(...)` and `event.method(...)`:
-
-#### `event:reply(text[, options])`
-
-Replies directly to the received message with a quote (`reply_to`).
-
-```lua
-event:reply("Acknowledged!", { parse_mode = "markdown", delay = 0.5 })
-```
-
-#### `event:edit(new_text[, options])`
-
-Edits the text of the received message.
-
-```lua
-event:edit("Updated content", { parse_mode = "markdown" })
-```
-
-#### `event:delete([delay])`
-
-Deletes the received message.
-
-```lua
-event:delete(2.0)
-```
-
-#### `event:react(emoji[, delay])`
-
-Applies an emoji reaction directly to this message.
-
-```lua
-event:react("🔥", 0.5)
-```
-
-#### `event:pin([delay])`
-
-Pins this message in the current dialog.
-
-```lua
-event:pin()
-```
-
-#### `event:click(query_or_index[, delay])` (Alias: `event:click_button`)
-
-Clicks an inline callback button or simulates pressing a regular reply keyboard button attached to this message.
-
-```lua
--- Click by label (Inline or Reply keyboard)
-event:click("Verify")
-
--- Click by 1-based flat index
-event:click(1, 1.0)
+-- Supports colon syntax
+ox.log:info("Service ready.")
 ```
 
 ---
 
 ## Offline Simulator
 
-OxideGram includes a built-in interactive simulator to test bot scripts locally without connecting to Telegram:
+OxideGram includes a built-in interactive simulator for testing Lua bot logic locally without connecting to Telegram or requiring active credentials:
 
 ```bash
-# Launch interactive simulator for a bot
-oxidegram sim hello
-
-# Or via cargo
-cargo run -- sim hello
+# Run simulator for a script in data/bots/
+cargo run -- sim echo
 ```
 
-### Simulator Commands
+### Simulator REPL Commands
 
 | Command | Description |
-| :--- | :--- |
-| `/click <query_or_index>` | Simulates clicking an inline or reply keyboard button. |
-| `/buttons` | Displays all keyboard buttons attached to the most recent message. |
-| `/chat <id>` | Switches the current simulated chat ID (e.g. `/chat 123456789`). |
-| `/state` | Displays active message listeners and current `ox.storage` contents. |
-| `/help` | Prints simulator command reference. |
+|:---|:---|
+| `<any text>` | Simulates an incoming message with the typed text. |
+| `/click <text>` | Simulates clicking an inline or reply keyboard button. |
+| `/buttons <b1, b2>` | Attaches mock buttons to subsequent incoming messages. |
+| `/chat <id>` | Switches the simulated chat ID (e.g. `/chat 123456789`). |
+| `/state` | Displays the current in-memory contents of `ox.storage`. |
+| `/help` | Displays available simulator commands. |
 | `/exit` | Exits the simulator REPL. |

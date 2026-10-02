@@ -220,11 +220,15 @@ function initMobileMenu() {
   if (!toggleBtn || !sidebar || !backdrop) return;
 
   function toggle() {
-    sidebar.classList.toggle('open');
+    const isOpen = sidebar.classList.toggle('open');
+    backdrop.classList.toggle('active', isOpen);
+    document.body.classList.toggle('sidebar-open', isOpen);
   }
 
   function close() {
     sidebar.classList.remove('open');
+    backdrop.classList.remove('active');
+    document.body.classList.remove('sidebar-open');
   }
 
   toggleBtn.addEventListener('click', toggle);

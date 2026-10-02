@@ -92,6 +92,23 @@ pub enum SessionAction {
     Lock,
     /// Test unlocking the device-bound encryption vault
     Unlock,
+    /// Re-bind the device vault to this machine's physical hardware
+    Rebind,
+    /// Re-encrypt all saved sessions with a new master password
+    #[command(alias = "re-encrypt")]
+    Reencrypt,
+    /// Export saved sessions to a decrypted JSON backup
+    Export {
+        /// Output file path (default: data/sessions_backup.json)
+        #[arg(short, long, default_value = "data/sessions_backup.json")]
+        out: PathBuf,
+    },
+    /// Import sessions from a decrypted JSON backup file and encrypt them
+    Import {
+        /// Input backup file path
+        #[arg(short, long)]
+        file: PathBuf,
+    },
 }
 
 /// Actions available under `oxidegram template`.

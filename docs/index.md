@@ -83,6 +83,10 @@ Options:
 | **Remove account** | `oxidegram session remove +1234567890` |
 | **Unlock hardware vault** | `oxidegram session unlock` |
 | **Lock hardware vault** | `oxidegram session lock` |
+| **Re-bind vault to this machine** | `oxidegram session rebind` |
+| **Re-encrypt sessions (new password)** | `oxidegram session reencrypt` |
+| **Export decrypted backup** | `oxidegram session export -o backup.json` |
+| **Import & encrypt backup** | `oxidegram session import -f backup.json` |
 | **Generate script template** | `oxidegram template create flow --name my_dialog` |
 
 ---
@@ -99,7 +103,8 @@ To eliminate repetitive password prompts on trusted machines, OxideGram includes
   - **Linux**: `/etc/machine-id`, CPU model/vendor, Hostname, and SMBIOS DMI tables.
   - **Android (Termux)**: Build fingerprint, hardware SoC name, and application sandbox UID.
 - **Automatic Session Selection**: If only one authorized Telegram account is stored, OxideGram automatically selects it on startup without extra menu prompts.
-- **Tamper Resistance**: If the session storage or vault file is copied to an unauthenticated machine, the hardware fingerprint mismatch prevents decryption and prompts for the master password.
+- **Tamper Resistance & Device Migration**: If the session storage or vault file is copied to an unauthenticated or new machine, the hardware fingerprint mismatch prevents automatic decryption and prompts for the master password. Once verified against saved sessions, OxideGram offers to re-bind automatic unlock to the new device so you never have to type the password again on that machine.
+- **Proactive Management & Re-encryption**: Dedicated subcommands (`session rebind`, `session reencrypt`, `session export`, `session import`) allow re-binding to new hardware, rotating master encryption passwords across all sessions, and taking decrypted JSON backups for migration.
 
 ---
 

@@ -9,6 +9,7 @@ mod infrastructure;
 mod presentation;
 
 use application::authentication::{SessionRepository, SessionRestorer};
+use application::automation::BotConsole;
 use application::master_key::MasterKeyProvider;
 use clap::Parser;
 use errors::{OxideError, format_error_chain};
@@ -73,10 +74,11 @@ async fn run(cli: Cli) -> Result<(), OxideError> {
     let mut config = OxideConfig::default();
     config.load().await?;
 
-    let key_provider = Arc::new(HardwareMasterKeyProvider::new(
-        console.clone(),
-        cli.password.clone(),
-    ));
+    let validator = Arc::new(config.validator());
+    let key_provider = Arc::new(
+        HardwareMasterKeyProvider::new(console.clone(), cli.password.clone())
+            .with_validator(validator),
+    );
 
     match cli.command {
         Some(Commands::Run { bot, session }) => {
@@ -475,6 +477,149 @@ async fn run_session_command(
                 console.print("[info] No device vault is currently enrolled. Launch OxideGram to remember your password.");
             }
         }
+        SessionAction::Rebind => {
+            let password = match console
+                .ask_password("Enter your master password to bind vault to this machine:")
+            {
+                Ok(p) => p.trim().to_string(),
+                Err(_) => {
+                    console.print("Operation canceled.");
+                    return Ok(());
+                }
+            };
+            if password.is_empty() {
+                console.print("[error] Password cannot be empty.");
+                return Ok(());
+            }
+
+            if !config.verify_password(&password).await? {
+                console.print("[error] Incorrect master password. Re-bind aborted.");
+                return Ok(());
+            }
+
+            key_provider.save_device_key(&password).await?;
+            console.print(
+                "[success] Device vault successfully re-bound to this machine! Subsequent launches will auto-unlock without asking for a password.",
+            );
+        }
+        SessionAction::Reencrypt => {
+            let current_password = match console.ask_password("Enter current master password:") {
+                Ok(p) => p.trim().to_string(),
+                Err(_) => {
+                    console.print("Operation canceled.");
+                    return Ok(());
+                }
+            };
+            if !config.verify_password(&current_password).await? {
+                console.print("[error] Incorrect current master password. Re-encryption aborted.");
+                return Ok(());
+            }
+
+            let new_password = match console.ask_password("Enter new master password:") {
+                Ok(p) => p.trim().to_string(),
+                Err(_) => {
+                    console.print("Operation canceled.");
+                    return Ok(());
+                }
+            };
+            if new_password.is_empty() {
+                console.print("[error] New password cannot be empty.");
+                return Ok(());
+            }
+
+            let confirm_password = match console.ask_password("Confirm new master password:") {
+                Ok(p) => p.trim().to_string(),
+                Err(_) => {
+                    console.print("Operation canceled.");
+                    return Ok(());
+                }
+            };
+            if new_password != confirm_password {
+                console.print("[error] Passwords do not match. Re-encryption aborted.");
+                return Ok(());
+            }
+
+            let count = config
+                .reencrypt_all_sessions(&current_password, &new_password)
+                .await?;
+            console.print(&format!(
+                "[success] Successfully re-encrypted {count} sessions with the new master password."
+            ));
+
+            let update_vault = console
+                .ask_confirm("Update device vault on this machine with the new password?")
+                .unwrap_or(false);
+            if update_vault {
+                key_provider.save_device_key(&new_password).await?;
+                console.print("[success] Device vault updated with the new password!");
+            }
+        }
+        SessionAction::Export { out } => {
+            let password = match console.ask_password("Enter master password to export sessions:") {
+                Ok(p) => p.trim().to_string(),
+                Err(_) => {
+                    console.print("Operation canceled.");
+                    return Ok(());
+                }
+            };
+            if !config.verify_password(&password).await? {
+                console.print("[error] Incorrect master password. Export aborted.");
+                return Ok(());
+            }
+
+            console.print(
+                "[warning] Decrypted backup file will contain sensitive authentication tokens.",
+            );
+            let proceed = console
+                .ask_confirm(&format!("Export sessions to {}?", out.display()))
+                .unwrap_or(false);
+            if !proceed {
+                console.print("Export canceled.");
+                return Ok(());
+            }
+
+            let count = config.export_decrypted_sessions(&password, &out).await?;
+            console.print(&format!(
+                "[success] Exported {count} decrypted sessions to {}",
+                out.display()
+            ));
+        }
+        SessionAction::Import { file } => {
+            if !file.exists() {
+                console.print(&format!(
+                    "[error] Backup file not found: {}",
+                    file.display()
+                ));
+                return Ok(());
+            }
+
+            let password =
+                match console.ask_password("Enter master password to encrypt imported sessions:") {
+                    Ok(p) => p.trim().to_string(),
+                    Err(_) => {
+                        console.print("Operation canceled.");
+                        return Ok(());
+                    }
+                };
+            if password.is_empty() {
+                console.print("[error] Password cannot be empty.");
+                return Ok(());
+            }
+
+            let count = config.import_decrypted_sessions(&password, &file).await?;
+            console.print(&format!(
+                "[success] Imported and encrypted {count} sessions from {}",
+                file.display()
+            ));
+
+            let update_vault = console
+                .ask_confirm("Remember password on this device for automatic unlock?")
+                .unwrap_or(false);
+            if update_vault {
+                key_provider.save_device_key(&password).await?;
+                console.print("[success] Device vault updated!");
+            }
+        }
     }
     Ok(())
 }
@@ -490,7 +635,11 @@ async fn run_session_menu(
         "3. Remove Session".to_string(),
         "4. Lock Device Vault (Clear Saved Password)".to_string(),
         "5. Test Device Vault Unlock".to_string(),
-        "6. Back to Main Menu".to_string(),
+        "6. Re-bind Device Vault to this machine (Adapt After Migration)".to_string(),
+        "7. Re-encrypt Sessions (Change Master Password)".to_string(),
+        "8. Export Decrypted Sessions Backup".to_string(),
+        "9. Import Plaintext Sessions Backup".to_string(),
+        "10. Back to Main Menu".to_string(),
     ];
 
     let choice = match console.ask_select("Session Management:", options) {
@@ -498,7 +647,9 @@ async fn run_session_menu(
         Err(_) => return Ok(()),
     };
 
-    if choice.starts_with('1') {
+    if choice.starts_with("10") {
+        return Ok(());
+    } else if choice.starts_with('1') {
         run_session_command(console, config, key_provider, SessionAction::List).await?;
     } else if choice.starts_with('2') {
         run_session_command(console, config, key_provider, SessionAction::Add).await?;
@@ -530,6 +681,49 @@ async fn run_session_menu(
         run_session_command(console, config, key_provider, SessionAction::Lock).await?;
     } else if choice.starts_with('5') {
         run_session_command(console, config, key_provider, SessionAction::Unlock).await?;
+    } else if choice.starts_with('6') {
+        run_session_command(console, config, key_provider, SessionAction::Rebind).await?;
+    } else if choice.starts_with('7') {
+        run_session_command(console, config, key_provider, SessionAction::Reencrypt).await?;
+    } else if choice.starts_with('8') {
+        let default_path = std::path::PathBuf::from("data/sessions_backup.json");
+        let path_str = match console.ask_file(
+            "Enter path to export decrypted sessions:",
+            Some(default_path.to_str().unwrap_or("data/sessions_backup.json")),
+            false,
+            Some(vec!["json".to_string()]),
+        ) {
+            Ok(p) => p,
+            Err(_) => return Ok(()),
+        };
+        run_session_command(
+            console,
+            config,
+            key_provider,
+            SessionAction::Export {
+                out: std::path::PathBuf::from(path_str),
+            },
+        )
+        .await?;
+    } else if choice.starts_with('9') {
+        let path_str = match console.ask_file(
+            "Select backup JSON file to import:",
+            Some("data/sessions_backup.json"),
+            true,
+            Some(vec!["json".to_string()]),
+        ) {
+            Ok(p) => p,
+            Err(_) => return Ok(()),
+        };
+        run_session_command(
+            console,
+            config,
+            key_provider,
+            SessionAction::Import {
+                file: std::path::PathBuf::from(path_str),
+            },
+        )
+        .await?;
     }
 
     Ok(())

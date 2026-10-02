@@ -1,7 +1,7 @@
 //! Hardware-bound master key provider implementation.
 
 use crate::application::authentication::LoginConsole;
-use crate::application::master_key::MasterKeyProvider;
+use crate::application::master_key::{KeyValidator, MasterKeyProvider};
 use crate::errors::{AuthError, OxideError};
 use crate::infrastructure::crypto::device_vault::HardwareDeviceVault;
 use crate::infrastructure::crypto::fingerprint::{FingerprintCollector, get_platform_collector};
@@ -24,6 +24,7 @@ pub struct HardwareMasterKeyProvider {
     explicit_password: Option<String>,
     cached_password: Arc<RwLock<Option<String>>>,
     console: Arc<dyn LoginConsole>,
+    validator: Option<Arc<dyn KeyValidator>>,
 }
 
 impl HardwareMasterKeyProvider {
@@ -35,7 +36,14 @@ impl HardwareMasterKeyProvider {
             explicit_password,
             cached_password: Arc::new(RwLock::new(None)),
             console,
+            validator: None,
         }
+    }
+
+    /// Attaches an optional key validator to verify candidate passwords.
+    pub fn with_validator(mut self, validator: Arc<dyn KeyValidator>) -> Self {
+        self.validator = Some(validator);
+        self
     }
 
     /// Creates a custom provider with injected dependencies (useful for testing).
@@ -52,7 +60,23 @@ impl HardwareMasterKeyProvider {
             explicit_password,
             cached_password: Arc::new(RwLock::new(None)),
             console,
+            validator: None,
         }
+    }
+
+    /// Explicitly saves the master key into the persistent device-bound vault.
+    pub async fn save_device_key(&self, password: &str) -> Result<(), OxideError> {
+        <Self as MasterKeyProvider>::save_device_key(self, password).await
+    }
+
+    /// Explicitly clears the device-bound vault.
+    pub async fn clear_device_key(&self) -> Result<(), OxideError> {
+        <Self as MasterKeyProvider>::clear_device_key(self).await
+    }
+
+    /// Checks if a device vault file exists.
+    pub fn has_device_key(&self) -> bool {
+        <Self as MasterKeyProvider>::has_device_key(self)
     }
 }
 
@@ -81,6 +105,7 @@ impl MasterKeyProvider for HardwareMasterKeyProvider {
         }
 
         // 4. Check hardware-bound device vault
+        let mut device_mismatch = false;
         if self.vault.exists() {
             match self.collector.collect() {
                 Ok(fp) => match self.vault.try_unlock(&fp) {
@@ -93,6 +118,7 @@ impl MasterKeyProvider for HardwareMasterKeyProvider {
                         warn!(
                             "Device mismatch: .device_vault was created on another machine or hardware changed"
                         );
+                        device_mismatch = true;
                     }
                     Err(err) => {
                         warn!(error = %err, "Failed to unlock device vault");
@@ -105,18 +131,63 @@ impl MasterKeyProvider for HardwareMasterKeyProvider {
         }
 
         // 5. Interactive prompt fallback
-        let prompt_result = self
-            .console
-            .ask_password("Enter your decryption password:")
-            .map_err(AuthError::UiError)?;
+        let mut attempts = 0;
+        let password = loop {
+            let prompt_result = self
+                .console
+                .ask_password("Enter your decryption password:")
+                .map_err(AuthError::UiError)?;
 
-        let password = prompt_result.trim().to_string();
-        if password.is_empty() {
-            return Err(AuthError::UiError("Password cannot be empty".into()).into());
-        }
+            let candidate = prompt_result.trim().to_string();
+            if candidate.is_empty() {
+                return Err(AuthError::UiError("Password cannot be empty".into()).into());
+            }
 
-        // Offer to remember on this device if vault doesn't already exist
-        if !self.vault.exists() {
+            if let Some(ref validator) = self.validator {
+                match validator.validate_key(&candidate).await {
+                    Ok(true) => break candidate,
+                    Ok(false) => {
+                        attempts += 1;
+                        if attempts >= 3 {
+                            return Err(AuthError::DecryptionFailed(
+                                "Incorrect password entered 3 times".into(),
+                            )
+                            .into());
+                        }
+                        self.console.print(&format!(
+                            "[error] Incorrect password (attempt {attempts}/3). Please try again."
+                        ));
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Password validation error, proceeding with input");
+                        break candidate;
+                    }
+                }
+            } else {
+                break candidate;
+            }
+        };
+
+        // Offer to remember or re-bind on this device
+        if device_mismatch {
+            let rebind = self
+                .console
+                .ask_confirm(
+                    "Hardware mismatch detected (vault was created on another device). Re-bind automatic unlock to this machine?",
+                )
+                .unwrap_or(false);
+
+            if rebind {
+                if let Err(err) = self.save_device_key(&password).await {
+                    warn!(error = %err, "Failed to re-bind device-bound key vault");
+                } else {
+                    info!("Master key re-bound to this device's hardware successfully");
+                    self.console.print(
+                        "[success] Device vault successfully re-bound to this machine! Automatic unlock is now active.",
+                    );
+                }
+            }
+        } else if !self.vault.exists() {
             let remember = self
                 .console
                 .ask_confirm("Remember password on this device for automatic unlock?")
@@ -144,6 +215,7 @@ impl MasterKeyProvider for HardwareMasterKeyProvider {
             .store(password, &fp)
             .map_err(|e| AuthError::UiError(format!("Failed to save device vault: {e}")))?;
 
+        *self.cached_password.write().await = Some(password.to_string());
         Ok(())
     }
 
@@ -280,5 +352,120 @@ mod tests {
         // Clear device key
         provider.clear_device_key().await.unwrap();
         assert!(!provider.has_device_key());
+    }
+
+    #[tokio::test]
+    async fn test_device_mismatch_offers_rebind_and_succeeds() {
+        let temp = TempVaultGuard::new();
+        let vault = HardwareDeviceVault::new(&temp.0);
+
+        let fp_old = HardwareFingerprint::from_probes(vec![
+            ("probe1", "machine_a".to_string()),
+            ("probe2", "cpu_a".to_string()),
+        ])
+        .unwrap();
+
+        let fp_new = HardwareFingerprint::from_probes(vec![
+            ("probe1", "machine_b".to_string()),
+            ("probe2", "cpu_b".to_string()),
+        ])
+        .unwrap();
+
+        // 1. Vault originally created on Machine A
+        vault.store("migrated_password", &fp_old).unwrap();
+
+        // 2. Transferred to Machine B: hardware mismatch occurs
+        let collector_b = Box::new(MockCollector(fp_new.clone()));
+        let console_b = Arc::new(MockConsole {
+            password: "migrated_password".to_string(),
+            remember: true, // Agree to re-bind to Machine B
+        });
+
+        let provider_b =
+            HardwareMasterKeyProvider::with_components(vault.clone(), collector_b, None, console_b);
+
+        let resolved = provider_b.resolve_master_key().await.unwrap();
+        assert_eq!(resolved, "migrated_password");
+
+        // 3. Verify that Machine B can now auto-unlock without console input
+        struct PanicConsole;
+        impl LoginConsole for PanicConsole {
+            fn ask_text(&self, _: &str) -> Result<String, String> {
+                unreachable!()
+            }
+            fn ask_password(&self, _: &str) -> Result<String, String> {
+                unreachable!()
+            }
+            fn ask_integer(&self, _: &str) -> Result<i32, String> {
+                unreachable!()
+            }
+            fn ask_confirm(&self, _: &str) -> Result<bool, String> {
+                unreachable!()
+            }
+            fn ask_autocomplete(&self, _: &str, _: Vec<String>) -> Result<String, String> {
+                unreachable!()
+            }
+        }
+
+        let provider_next = HardwareMasterKeyProvider::with_components(
+            vault,
+            Box::new(MockCollector(fp_new)),
+            None,
+            Arc::new(PanicConsole),
+        );
+
+        let auto_unlocked = provider_next.resolve_master_key().await.unwrap();
+        assert_eq!(auto_unlocked, "migrated_password");
+    }
+
+    #[tokio::test]
+    async fn test_validator_retries_on_wrong_password() {
+        struct SequentialConsole {
+            passwords: std::sync::Mutex<Vec<String>>,
+        }
+        impl LoginConsole for SequentialConsole {
+            fn ask_text(&self, _: &str) -> Result<String, String> {
+                unreachable!()
+            }
+            fn ask_password(&self, _: &str) -> Result<String, String> {
+                let mut list = self.passwords.lock().unwrap();
+                Ok(list.remove(0))
+            }
+            fn ask_integer(&self, _: &str) -> Result<i32, String> {
+                unreachable!()
+            }
+            fn ask_confirm(&self, _: &str) -> Result<bool, String> {
+                Ok(false)
+            }
+            fn ask_autocomplete(&self, _: &str, _: Vec<String>) -> Result<String, String> {
+                unreachable!()
+            }
+        }
+
+        struct TestValidator;
+        #[async_trait]
+        impl KeyValidator for TestValidator {
+            async fn validate_key(&self, password: &str) -> Result<bool, OxideError> {
+                Ok(password == "correct_pass")
+            }
+        }
+
+        let temp = TempVaultGuard::new();
+        let vault = HardwareDeviceVault::new(&temp.0);
+        let fp = test_fingerprint();
+        let collector = Box::new(MockCollector(fp));
+
+        let console = Arc::new(SequentialConsole {
+            passwords: std::sync::Mutex::new(vec![
+                "wrong_first".to_string(),
+                "correct_pass".to_string(),
+            ]),
+        });
+
+        let provider = HardwareMasterKeyProvider::with_components(vault, collector, None, console)
+            .with_validator(Arc::new(TestValidator));
+
+        let resolved = provider.resolve_master_key().await.unwrap();
+        assert_eq!(resolved, "correct_pass");
     }
 }

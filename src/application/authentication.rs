@@ -21,6 +21,7 @@ pub trait LoginConsole: Send + Sync {
     fn ask_integer(&self, prompt: &str) -> Result<i32, String>;
     fn ask_confirm(&self, prompt: &str) -> Result<bool, String>;
     fn ask_autocomplete(&self, prompt: &str, choices: Vec<String>) -> Result<String, String>;
+    fn print(&self, _message: &str) {}
 }
 
 pub enum SignInStatus<T> {

@@ -57,6 +57,10 @@ pub enum ConfigError {
     Deserialization(#[from] toml::de::Error),
     #[error("Failed to serialize TOML configuration: {0}")]
     Serialization(#[from] toml::ser::Error),
+    #[error("Failed to serialize backup JSON: {0}")]
+    JsonSerialization(#[source] serde_json::Error),
+    #[error("Failed to parse backup JSON: {0}")]
+    JsonDeserialization(#[source] serde_json::Error),
 }
 
 /// Error types related to Lua bot execution and dynamic loading.

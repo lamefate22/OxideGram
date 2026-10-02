@@ -4,16 +4,29 @@
 //! in `data/config.oxide` using atomic file replacement.
 
 use crate::application::authentication::SessionRepository;
+use crate::application::master_key::KeyValidator;
 use crate::domain::PhoneNumber;
 use crate::domain::identity::SavedSession;
-use crate::errors::{ConfigError, OxideError};
+use crate::errors::{AuthError, ConfigError, OxideError};
 use crate::infrastructure::IO_TIMEOUT;
+use crate::infrastructure::crypto;
 use async_trait::async_trait;
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{debug, info};
+
+/// Decrypted session representation used for export and migration backups.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecryptedSessionBackup {
+    pub phone: String,
+    pub api_id: i32,
+    pub api_hash: String,
+    pub session_hex: String,
+}
 
 /// Root data model representing OxideGram configuration file contents.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -175,6 +188,231 @@ impl OxideConfig {
             Ok(false)
         }
     }
+
+    /// Verifies whether the provided master password can successfully decrypt saved sessions.
+    /// Returns `Ok(true)` if valid or if no sessions exist yet.
+    /// Returns `Ok(false)` if password fails decryption on any saved session.
+    pub async fn verify_password(&self, password: &str) -> Result<bool, OxideError> {
+        let Some(first) = self.data.sessions.values().next() else {
+            return Ok(true);
+        };
+        let Ok(salt_bytes) = URL_SAFE_NO_PAD.decode(&first.salt) else {
+            return Ok(false);
+        };
+        let Ok(salt) = salt_bytes.try_into() else {
+            return Ok(false);
+        };
+        match crypto::decrypt_string_async(password, &salt, &first.session_string).await {
+            Ok(_) => Ok(true),
+            Err(_) => Ok(false),
+        }
+    }
+
+    /// Re-encrypts all stored sessions with a new master password.
+    ///
+    /// Decrypts all sessions into memory using `old_password` first to guarantee data integrity,
+    /// then derives new salts and re-encrypts all session strings with `new_password`.
+    pub async fn reencrypt_all_sessions(
+        &mut self,
+        old_password: &str,
+        new_password: &str,
+    ) -> Result<usize, OxideError> {
+        if self.data.sessions.is_empty() {
+            return Ok(0);
+        }
+
+        // 1. Decrypt all sessions into memory first
+        let mut decrypted_sessions = Vec::new();
+        for (phone, persisted) in &self.data.sessions {
+            let salt_bytes = URL_SAFE_NO_PAD
+                .decode(&persisted.salt)
+                .map_err(|e| AuthError::DecryptionFailed(e.to_string()))?;
+            let salt: [u8; 16] = salt_bytes
+                .try_into()
+                .map_err(|_| AuthError::DecryptionFailed("Invalid salt length".into()))?;
+            let session_hex =
+                crypto::decrypt_string_async(old_password, &salt, &persisted.session_string)
+                    .await
+                    .map_err(|e| {
+                        AuthError::DecryptionFailed(format!(
+                            "Failed to decrypt session {phone}: {e}"
+                        ))
+                    })?;
+            decrypted_sessions.push((
+                phone.clone(),
+                persisted.api_id,
+                persisted.api_hash.clone(),
+                session_hex,
+            ));
+        }
+
+        // 2. Re-encrypt all sessions with new password and fresh salts
+        let count = decrypted_sessions.len();
+        for (phone, api_id, api_hash, session_hex) in decrypted_sessions {
+            let new_salt = crypto::generate_salt()?;
+            let encrypted =
+                crypto::encrypt_string_async(new_password, &new_salt, &session_hex).await?;
+            self.data.sessions.insert(
+                phone,
+                PersistedSession {
+                    salt: URL_SAFE_NO_PAD.encode(new_salt),
+                    api_id,
+                    api_hash,
+                    session_string: encrypted,
+                },
+            );
+        }
+
+        // 3. Atomically save the updated config
+        self.save().await?;
+        info!(
+            count,
+            "All saved sessions re-encrypted with new master password"
+        );
+        Ok(count)
+    }
+
+    /// Decrypts all saved sessions and exports them to an unencrypted JSON backup file.
+    pub async fn export_decrypted_sessions(
+        &self,
+        password: &str,
+        out_path: &Path,
+    ) -> Result<usize, OxideError> {
+        let mut backups = Vec::new();
+        for (phone, persisted) in &self.data.sessions {
+            let salt_bytes = URL_SAFE_NO_PAD
+                .decode(&persisted.salt)
+                .map_err(|e| AuthError::DecryptionFailed(e.to_string()))?;
+            let salt: [u8; 16] = salt_bytes
+                .try_into()
+                .map_err(|_| AuthError::DecryptionFailed("Invalid salt length".into()))?;
+            let session_hex =
+                crypto::decrypt_string_async(password, &salt, &persisted.session_string)
+                    .await
+                    .map_err(|e| {
+                        AuthError::DecryptionFailed(format!(
+                            "Failed to decrypt session {phone}: {e}"
+                        ))
+                    })?;
+            backups.push(DecryptedSessionBackup {
+                phone: phone.clone(),
+                api_id: persisted.api_id,
+                api_hash: persisted.api_hash.clone(),
+                session_hex,
+            });
+        }
+
+        let json =
+            serde_json::to_string_pretty(&backups).map_err(ConfigError::JsonSerialization)?;
+
+        if let Some(parent) = out_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            tokio::time::timeout(IO_TIMEOUT, fs::create_dir_all(parent))
+                .await
+                .map_err(|_| {
+                    ConfigError::Io(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "Create export directory timed out",
+                    ))
+                })?
+                .map_err(ConfigError::Io)?;
+        }
+
+        tokio::time::timeout(IO_TIMEOUT, fs::write(out_path, &json))
+            .await
+            .map_err(|_| {
+                ConfigError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Write export backup timed out",
+                ))
+            })?
+            .map_err(ConfigError::Io)?;
+
+        info!(count = backups.len(), path = %out_path.display(), "Sessions exported to backup");
+        Ok(backups.len())
+    }
+
+    /// Imports plaintext sessions from a JSON backup file and re-encrypts them with the master password.
+    pub async fn import_decrypted_sessions(
+        &mut self,
+        password: &str,
+        in_path: &Path,
+    ) -> Result<usize, OxideError> {
+        let content = tokio::time::timeout(IO_TIMEOUT, fs::read_to_string(in_path))
+            .await
+            .map_err(|_| {
+                ConfigError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Read import backup timed out",
+                ))
+            })?
+            .map_err(ConfigError::Io)?;
+
+        let backups: Vec<DecryptedSessionBackup> =
+            serde_json::from_str(&content).map_err(ConfigError::JsonDeserialization)?;
+
+        let count = backups.len();
+        for item in backups {
+            let salt = crypto::generate_salt()?;
+            let encrypted =
+                crypto::encrypt_string_async(password, &salt, &item.session_hex).await?;
+            self.data.sessions.insert(
+                item.phone,
+                PersistedSession {
+                    salt: URL_SAFE_NO_PAD.encode(salt),
+                    api_id: item.api_id,
+                    api_hash: item.api_hash,
+                    session_string: encrypted,
+                },
+            );
+        }
+
+        self.save().await?;
+        info!(count, "Sessions imported and encrypted from backup");
+        Ok(count)
+    }
+
+    /// Creates a snapshot key validator backed by the current configuration's sessions.
+    pub fn validator(&self) -> SessionKeyValidator {
+        let sessions = self
+            .data
+            .sessions
+            .values()
+            .map(|s| (s.salt.clone(), s.session_string.clone()))
+            .collect();
+        SessionKeyValidator::new(sessions)
+    }
+}
+
+/// Lightweight snapshot validator that verifies candidate passwords against saved sessions.
+#[derive(Debug, Clone, Default)]
+pub struct SessionKeyValidator {
+    sessions: Vec<(String, String)>,
+}
+
+impl SessionKeyValidator {
+    /// Creates a new validator with the given `(salt_b64, session_ciphertext)` pairs.
+    pub fn new(sessions: Vec<(String, String)>) -> Self {
+        Self { sessions }
+    }
+}
+
+#[async_trait]
+impl KeyValidator for SessionKeyValidator {
+    async fn validate_key(&self, password: &str) -> Result<bool, OxideError> {
+        let Some((salt_b64, session_str)) = self.sessions.first() else {
+            return Ok(true);
+        };
+        let Ok(salt_bytes) = URL_SAFE_NO_PAD.decode(salt_b64) else {
+            return Ok(false);
+        };
+        let Ok(salt) = salt_bytes.try_into() else {
+            return Ok(false);
+        };
+        match crypto::decrypt_string_async(password, &salt, session_str).await {
+            Ok(_) => Ok(true),
+            Err(_) => Ok(false),
+        }
+    }
 }
 
 #[async_trait]
@@ -269,5 +507,126 @@ mod tests {
             err,
             OxideError::Config(ConfigError::Deserialization(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn test_verify_password_and_reencrypt_all_sessions() {
+        let temp = TempConfigPath::new();
+        let mut config = OxideConfig::new(temp.0.clone());
+        config.load().await.unwrap();
+
+        let salt = crypto::generate_salt().unwrap();
+        let session_str = crypto::encrypt_string_async("pass1", &salt, "sample_hex_data")
+            .await
+            .unwrap();
+
+        let session = SavedSession {
+            salt: URL_SAFE_NO_PAD.encode(salt),
+            api_id: ApiId::new(12345),
+            api_hash: ApiHash::new("hash123"),
+            session_string: session_str,
+        };
+
+        config
+            .save_session("+111222333".into(), session)
+            .await
+            .unwrap();
+
+        // 1. Password verification
+        assert!(config.verify_password("pass1").await.unwrap());
+        assert!(!config.verify_password("wrong_pass").await.unwrap());
+
+        // 2. Validator snapshot test
+        let validator = config.validator();
+        assert!(validator.validate_key("pass1").await.unwrap());
+        assert!(!validator.validate_key("wrong_pass").await.unwrap());
+
+        // 3. Re-encrypt all sessions with new password
+        let count = config
+            .reencrypt_all_sessions("pass1", "pass2")
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // 4. Verification under new password
+        assert!(!config.verify_password("pass1").await.unwrap());
+        assert!(config.verify_password("pass2").await.unwrap());
+
+        // 5. Verify data integrity after reload
+        let mut config_reloaded = OxideConfig::new(temp.0.clone());
+        config_reloaded.load().await.unwrap();
+        assert!(config_reloaded.verify_password("pass2").await.unwrap());
+
+        let loaded_session = config_reloaded.session("+111222333").unwrap();
+        let new_salt_bytes: [u8; 16] = URL_SAFE_NO_PAD
+            .decode(&loaded_session.salt)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let decrypted =
+            crypto::decrypt_string_async("pass2", &new_salt_bytes, &loaded_session.session_string)
+                .await
+                .unwrap();
+        assert_eq!(decrypted, "sample_hex_data");
+    }
+
+    #[tokio::test]
+    async fn test_export_and_import_decrypted_sessions() {
+        let temp_cfg = TempConfigPath::new();
+        let mut config = OxideConfig::new(temp_cfg.0.clone());
+        config.load().await.unwrap();
+
+        let salt = crypto::generate_salt().unwrap();
+        let session_str = crypto::encrypt_string_async("orig_pass", &salt, "hex_payload_456")
+            .await
+            .unwrap();
+
+        let session = SavedSession {
+            salt: URL_SAFE_NO_PAD.encode(salt),
+            api_id: ApiId::new(777),
+            api_hash: ApiHash::new("hash777"),
+            session_string: session_str,
+        };
+
+        config
+            .save_session("+999888777".into(), session)
+            .await
+            .unwrap();
+
+        // Export to temporary JSON
+        let export_path =
+            std::env::temp_dir().join(format!("oxide_export_{}.json", rand::random::<u64>()));
+        let export_count = config
+            .export_decrypted_sessions("orig_pass", &export_path)
+            .await
+            .unwrap();
+        assert_eq!(export_count, 1);
+        assert!(export_path.exists());
+
+        // Import into clean configuration with different password
+        let temp_cfg2 = TempConfigPath::new();
+        let mut config2 = OxideConfig::new(temp_cfg2.0.clone());
+        config2.load().await.unwrap();
+
+        let import_count = config2
+            .import_decrypted_sessions("imported_new_pass", &export_path)
+            .await
+            .unwrap();
+        assert_eq!(import_count, 1);
+
+        assert!(config2.verify_password("imported_new_pass").await.unwrap());
+        let imported = config2.session("+999888777").unwrap();
+        let imp_salt: [u8; 16] = URL_SAFE_NO_PAD
+            .decode(&imported.salt)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let decrypted =
+            crypto::decrypt_string_async("imported_new_pass", &imp_salt, &imported.session_string)
+                .await
+                .unwrap();
+        assert_eq!(decrypted, "hex_payload_456");
+
+        let _ = std::fs::remove_file(&export_path);
     }
 }

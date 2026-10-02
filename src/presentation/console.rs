@@ -266,6 +266,10 @@ impl LoginConsole for OxideConsole {
     fn ask_autocomplete(&self, prompt: &str, choices: Vec<String>) -> Result<String, String> {
         OxideConsole::ask_autocomplete(self, prompt, choices)
     }
+
+    fn print(&self, message: &str) {
+        OxideConsole::print(self, message);
+    }
 }
 
 impl BotConsole for OxideConsole {

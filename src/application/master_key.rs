@@ -18,3 +18,11 @@ pub trait MasterKeyProvider: Send + Sync {
     /// Checks if a persistent device-bound key is present on this machine.
     fn has_device_key(&self) -> bool;
 }
+
+/// Port for validating whether a candidate master encryption key can decrypt stored data.
+#[async_trait]
+pub trait KeyValidator: Send + Sync {
+    /// Validates the candidate key against existing stored sessions or records.
+    /// Returns Ok(true) if valid or if no stored data exists to validate against.
+    async fn validate_key(&self, password: &str) -> Result<bool, OxideError>;
+}

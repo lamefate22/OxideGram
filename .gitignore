@@ -3,6 +3,7 @@
 /data/logs
 /data/sessions
 /data/config.oxide
+/data/config.tmp
 /data/.device_vault
 /data/storage
 *.zip

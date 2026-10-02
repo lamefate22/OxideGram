@@ -68,6 +68,7 @@ pub fn initialize_logger(verbosity: LogVerbosity) -> Result<WorkerGuard, OxideEr
 
     let console_layer = fmt::layer()
         .compact()
+        .without_time()
         .with_target(false)
         .with_file(false)
         .with_line_number(false)

@@ -438,13 +438,14 @@ impl LuaBotRunner {
                 &match_result,
             )?;
 
-            let snippet = if text.chars().count() > 40 {
-                let s: String = text.chars().take(40).collect();
+            let clean = text.replace(['\r', '\n'], " ");
+            let snippet = if clean.chars().count() > 40 {
+                let s: String = clean.chars().take(40).collect();
                 format!("{s}...")
             } else {
-                text.clone()
+                clean
             };
-            info!(target: "oxidegram", "[MSG] [{chat_id}] \"{snippet}\"");
+            debug!(target: "oxidegram", "[MSG] [{chat_id}] \"{snippet}\"");
 
             debug!(chat_id, sender_id, "Running Lua message handler");
             if let Ok(func) = self.lua.registry_value::<Function>(&item.callback_key)
@@ -613,11 +614,12 @@ impl LuaBotRunner {
                                 .reply_to(Some(message_id));
 
                         invoke_send_message(&client, peer_ref, reply_message).await?;
-                        let snippet = if reply_text.chars().count() > 40 {
-                            let s: String = reply_text.chars().take(40).collect();
+                        let clean = reply_text.replace(['\r', '\n'], " ");
+                        let snippet = if clean.chars().count() > 40 {
+                            let s: String = clean.chars().take(40).collect();
                             format!("{s}...")
                         } else {
-                            reply_text.clone()
+                            clean
                         };
                         info!(target: "oxidegram", "[REPLY] [{chat_id}] \"{snippet}\"");
                         Ok(())

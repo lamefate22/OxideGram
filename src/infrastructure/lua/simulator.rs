@@ -1170,4 +1170,15 @@ mod tests {
         // Simulate incoming message
         sim.simulate_incoming("test message").await.unwrap();
     }
+
+    #[tokio::test]
+    async fn test_pocelyikin_script_in_simulator() {
+        let console = Arc::new(MockConsole);
+        let mut sim = BotSimulator::new("data/bots/pocelyikin.lua", console)
+            .await
+            .unwrap();
+        sim.load_script().await.unwrap();
+        assert_eq!(sim.handlers.lock().await.len(), 1);
+        sim.simulate_incoming("Теперь поставьте").await.unwrap();
+    }
 }

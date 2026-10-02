@@ -69,9 +69,16 @@ pub fn register_flow_api(lua: &Lua, ox_table: &Table) -> Result<(), mlua::Error>
             let mut initial_step: Option<String> = None;
 
             if let Some(ref opts) = options_val {
-                if let Ok(chat_id) = opts.get::<i64>("target_chat") {
+                if let Ok(chat_id) = opts
+                    .get::<i64>("chats")
+                    .or_else(|_| opts.get::<i64>("chat"))
+                    .or_else(|_| opts.get::<i64>("target_chat"))
+                {
                     target_chats = Some(vec![chat_id]);
-                } else if let Ok(chats_table) = opts.get::<Table>("target_chats") {
+                } else if let Ok(chats_table) = opts
+                    .get::<Table>("chats")
+                    .or_else(|_| opts.get::<Table>("target_chats"))
+                {
                     let mut list = Vec::new();
                     for c in chats_table.sequence_values::<i64>().flatten() {
                         list.push(c);
@@ -368,8 +375,10 @@ pub fn register_flow_api(lua: &Lua, ox_table: &Table) -> Result<(), mlua::Error>
 
             let filter_table = lua_outer.create_table()?;
             if let Some(ref opts) = options_val {
-                if let Ok(v) = opts.get::<Value>("chats") {
-                    filter_table.set("chats", v)?;
+                if opts.contains_key("chats")? {
+                    filter_table.set("chats", opts.get::<Value>("chats")?)?;
+                } else if opts.contains_key("chat")? {
+                    filter_table.set("chats", opts.get::<Value>("chat")?)?;
                 } else if let Some(ref chats) = coordinator.target_chats {
                     if chats.len() == 1 {
                         filter_table.set("chats", chats[0])?;
@@ -381,28 +390,28 @@ pub fn register_flow_api(lua: &Lua, ox_table: &Table) -> Result<(), mlua::Error>
                         filter_table.set("chats", t)?;
                     }
                 }
-                if let Ok(v) = opts.get::<Value>("senders") {
-                    filter_table.set("senders", v)?;
+                if opts.contains_key("senders")? {
+                    filter_table.set("senders", opts.get::<Value>("senders")?)?;
                 }
-                if let Ok(v) = opts.get::<bool>("incoming") {
-                    filter_table.set("incoming", v)?;
+                if opts.contains_key("incoming")? {
+                    filter_table.set("incoming", opts.get::<bool>("incoming")?)?;
                 } else if !opts.contains_key("outgoing")? {
                     filter_table.set("incoming", true)?;
                 }
-                if let Ok(v) = opts.get::<bool>("outgoing") {
-                    filter_table.set("outgoing", v)?;
+                if opts.contains_key("outgoing")? {
+                    filter_table.set("outgoing", opts.get::<bool>("outgoing")?)?;
                 }
-                if let Ok(v) = opts.get::<bool>("private") {
-                    filter_table.set("private", v)?;
+                if opts.contains_key("private")? {
+                    filter_table.set("private", opts.get::<bool>("private")?)?;
                 }
-                if let Ok(v) = opts.get::<bool>("group") {
-                    filter_table.set("group", v)?;
+                if opts.contains_key("group")? {
+                    filter_table.set("group", opts.get::<bool>("group")?)?;
                 }
-                if let Ok(v) = opts.get::<bool>("channel") {
-                    filter_table.set("channel", v)?;
+                if opts.contains_key("channel")? {
+                    filter_table.set("channel", opts.get::<bool>("channel")?)?;
                 }
-                if let Ok(v) = opts.get::<bool>("has_text") {
-                    filter_table.set("has_text", v)?;
+                if opts.contains_key("has_text")? {
+                    filter_table.set("has_text", opts.get::<bool>("has_text")?)?;
                 } else {
                     filter_table.set("has_text", true)?;
                 }

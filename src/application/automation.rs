@@ -31,4 +31,16 @@ pub trait BotConsole: Send + Sync {
             || trimmed == "1"
             || trimmed == "да")
     }
+
+    /// Prompts the user to enter or select a file path, with autocomplete and validation.
+    fn ask_file(
+        &self,
+        prompt: &str,
+        default: Option<&str>,
+        must_exist: bool,
+        allowed_extensions: Option<Vec<String>>,
+    ) -> Result<String, String> {
+        let _ = (must_exist, allowed_extensions);
+        self.ask_input(prompt, default)
+    }
 }

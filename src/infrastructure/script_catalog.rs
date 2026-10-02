@@ -284,7 +284,7 @@ dialog:step("input_text", {
 })
 
 -- Global matchers (e.g. stop triggers)
-dialog:on_match("На сегодня много поцелуйчиков", function(event)
+dialog:on("На сегодня много поцелуйчиков", function(event)
     ox.stop()
 end)
 "#;

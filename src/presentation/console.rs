@@ -36,6 +36,103 @@ impl Autocomplete for ChoiceAutocomplete {
     }
 }
 
+/// Custom autocomplete provider for local filesystem paths.
+#[derive(Clone, Default)]
+pub struct FilePathAutocomplete {
+    pub allowed_extensions: Option<Vec<String>>,
+}
+
+impl Autocomplete for FilePathAutocomplete {
+    fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, CustomUserError> {
+        let normalized = input.replace('\\', "/");
+        let path = std::path::Path::new(&normalized);
+
+        let (dir_to_scan, search_prefix) = if normalized.is_empty() {
+            (std::path::PathBuf::from("."), String::new())
+        } else if normalized.ends_with('/') {
+            (path.to_path_buf(), String::new())
+        } else if let Some(parent) = path.parent() {
+            let prefix = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let dir = if parent.as_os_str().is_empty() {
+                std::path::PathBuf::from(".")
+            } else {
+                parent.to_path_buf()
+            };
+            (dir, prefix)
+        } else {
+            (std::path::PathBuf::from("."), normalized.to_lowercase())
+        };
+
+        let mut suggestions = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&dir_to_scan) {
+            let mut items: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+            items.sort_by_key(|e| {
+                let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                (!is_dir, e.file_name())
+            });
+
+            for entry in items {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let name_lower = name.to_lowercase();
+                if !search_prefix.is_empty() && !name_lower.starts_with(&search_prefix) {
+                    continue;
+                }
+
+                let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                let entry_path = if dir_to_scan == std::path::Path::new(".") {
+                    name.clone()
+                } else {
+                    let base_dir = dir_to_scan.to_string_lossy().replace('\\', "/");
+                    let base_clean = base_dir.trim_end_matches('/');
+                    format!("{base_clean}/{name}")
+                };
+
+                if is_dir {
+                    suggestions.push(format!("{entry_path}/"));
+                } else {
+                    let matches_ext = match &self.allowed_extensions {
+                        Some(exts) => {
+                            if let Some(ext) = std::path::Path::new(&name)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                            {
+                                exts.iter().any(|allowed| {
+                                    allowed.eq_ignore_ascii_case(ext.trim_start_matches('.'))
+                                })
+                            } else {
+                                false
+                            }
+                        }
+                        None => true,
+                    };
+
+                    if matches_ext {
+                        suggestions.push(entry_path);
+                    }
+                }
+
+                if suggestions.len() >= 30 {
+                    break;
+                }
+            }
+        }
+
+        Ok(suggestions)
+    }
+
+    fn get_completion(
+        &mut self,
+        _input: &str,
+        highlighted_suggestion: Option<String>,
+    ) -> Result<Option<String>, CustomUserError> {
+        Ok(highlighted_suggestion)
+    }
+}
+
 /// Terminal console manager wrapping `inquire` interactive prompt methods.
 pub struct OxideConsole;
 
@@ -216,11 +313,110 @@ impl BotConsole for OxideConsole {
             .prompt()
             .map_err(|e| format!("Failed to get confirmation: {e}"))
     }
+
+    fn ask_file(
+        &self,
+        prompt: &str,
+        default: Option<&str>,
+        must_exist: bool,
+        allowed_extensions: Option<Vec<String>>,
+    ) -> Result<String, String> {
+        let autocomplete = FilePathAutocomplete {
+            allowed_extensions: allowed_extensions.clone(),
+        };
+
+        let mut input = Text::new(prompt)
+            .with_autocomplete(autocomplete)
+            .with_render_config(render_config());
+
+        if let Some(def) = default {
+            input = input.with_default(def);
+        }
+
+        let exts_for_validator = allowed_extensions;
+        input = input.with_validator(move |val: &str| {
+            let trimmed = val.trim();
+            if trimmed.is_empty() {
+                return Ok(inquire::validator::Validation::Invalid(
+                    "File path cannot be empty.".into(),
+                ));
+            }
+            let path = std::path::Path::new(trimmed);
+            if must_exist && !path.exists() {
+                return Ok(inquire::validator::Validation::Invalid(
+                    format!("File does not exist: {trimmed}").into(),
+                ));
+            }
+            if must_exist && path.is_dir() {
+                return Ok(inquire::validator::Validation::Invalid(
+                    format!("Path is a directory, expected a file: {trimmed}").into(),
+                ));
+            }
+            if let Some(ref exts) = exts_for_validator {
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                let clean_ext = ext.trim_start_matches('.');
+                if !exts
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(clean_ext))
+                {
+                    return Ok(inquire::validator::Validation::Invalid(
+                        format!(
+                            "Invalid file extension '.{clean_ext}'. Allowed: {}",
+                            exts.join(", ")
+                        )
+                        .into(),
+                    ));
+                }
+            }
+            Ok(inquire::validator::Validation::Valid)
+        });
+
+        input
+            .prompt()
+            .map(|s| s.trim().to_string())
+            .map_err(|e| format!("Failed to get file path input: {e}"))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_file_path_autocomplete_finds_cargo_toml() {
+        let mut ac = FilePathAutocomplete {
+            allowed_extensions: Some(vec!["toml".into()]),
+        };
+        let suggestions = ac.get_suggestions("Cargo").unwrap();
+        assert!(
+            suggestions.iter().any(|s| s.contains("Cargo.toml")),
+            "Expected Cargo.toml in suggestions: {suggestions:?}"
+        );
+    }
+
+    #[test]
+    fn test_file_path_autocomplete_filters_extension() {
+        let mut ac = FilePathAutocomplete {
+            allowed_extensions: Some(vec!["nonexistent_ext_xyz".into()]),
+        };
+        let suggestions = ac.get_suggestions("Cargo.toml").unwrap();
+        // Since allowed_extensions doesn't include toml, it should not be suggested
+        assert!(!suggestions.iter().any(|s| s == "Cargo.toml"));
+    }
+
+    #[test]
+    fn test_file_path_autocomplete_directory_trailing_slash() {
+        let mut ac = FilePathAutocomplete {
+            allowed_extensions: None,
+        };
+        let suggestions = ac.get_suggestions("src/").unwrap();
+        assert!(
+            suggestions
+                .iter()
+                .any(|s| s.contains("src/domain") || s.contains("src/main.rs")),
+            "Expected files/dirs under src/: {suggestions:?}"
+        );
+    }
 
     #[test]
     fn test_autocomplete_empty_input_returns_all() {

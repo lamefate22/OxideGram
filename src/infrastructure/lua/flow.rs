@@ -41,6 +41,12 @@ struct FlowGlobalMatcher {
     action: Function,
 }
 
+/// Slash command route triggering across any step in the flow.
+struct FlowCommandMatcher {
+    commands: Vec<String>,
+    action: Function,
+}
+
 /// State machine coordinator for a dialog flow.
 struct FlowCoordinator {
     name: String,
@@ -51,6 +57,7 @@ struct FlowCoordinator {
     default_timeout: Option<f64>,
     steps: RwLock<HashMap<String, FlowStep>>,
     globals: RwLock<Vec<FlowGlobalMatcher>>,
+    commands: RwLock<Vec<FlowCommandMatcher>>,
 }
 
 /// Registers the `ox.flow(name, [options])` constructor in Lua.
@@ -61,7 +68,7 @@ pub fn register_flow_api(lua: &Lua, ox_table: &Table) -> Result<(), mlua::Error>
             let mut default_timeout: Option<f64> = None;
             let mut initial_step: Option<String> = None;
 
-            if let Some(opts) = options_val {
+            if let Some(ref opts) = options_val {
                 if let Ok(chat_id) = opts.get::<i64>("target_chat") {
                     target_chats = Some(vec![chat_id]);
                 } else if let Ok(chats_table) = opts.get::<Table>("target_chats") {
@@ -84,6 +91,7 @@ pub fn register_flow_api(lua: &Lua, ox_table: &Table) -> Result<(), mlua::Error>
                 default_timeout,
                 steps: RwLock::new(HashMap::new()),
                 globals: RwLock::new(Vec::new()),
+                commands: RwLock::new(Vec::new()),
             });
 
             let flow_table = lua_outer.create_table()?;
@@ -166,16 +174,16 @@ pub fn register_flow_api(lua: &Lua, ox_table: &Table) -> Result<(), mlua::Error>
             )?;
             flow_table.set("step", step_fn)?;
 
-            // flow:on_match(pattern, action) OR flow.on_match(pattern, action)
-            let coord_global = Arc::clone(&coordinator);
-            let on_match_fn = lua_outer.create_function(
+            // flow:command(name_or_list, action) OR flow.command(name_or_list, action)
+            let coord_cmd = Arc::clone(&coordinator);
+            let cmd_fn = lua_outer.create_function(
                 move |_, (arg1, arg2, arg3): (Value, Option<Value>, Option<Value>)| {
-                    let (pattern_val, action_val) = match (arg1, arg2, arg3) {
-                        (Value::Table(_), Some(p), Some(a)) => (p, a),
-                        (p, Some(a), _) => (p, a),
+                    let (cmd_val, action_val) = match (arg1, arg2, arg3) {
+                        (Value::Table(_), Some(n), Some(a)) => (n, a),
+                        (n, Some(a), _) => (n, a),
                         _ => {
                             return Err(mlua::Error::RuntimeError(
-                                "flow:on_match requires pattern and action function".into(),
+                                "flow:command requires command name and action function".into(),
                             ));
                         }
                     };
@@ -184,7 +192,61 @@ pub fn register_flow_api(lua: &Lua, ox_table: &Table) -> Result<(), mlua::Error>
                         Value::Function(f) => f,
                         _ => {
                             return Err(mlua::Error::RuntimeError(
-                                "flow:on_match action must be a function".into(),
+                                "flow:command action must be a function".into(),
+                            ));
+                        }
+                    };
+
+                    let mut cmd_list = Vec::new();
+                    match cmd_val {
+                        Value::String(s) => {
+                            let name = s.to_str()?.trim_start_matches('/').to_lowercase();
+                            cmd_list.push(name);
+                        }
+                        Value::Table(t) => {
+                            for item in t.sequence_values::<String>().flatten() {
+                                let name = item.trim_start_matches('/').to_lowercase();
+                                cmd_list.push(name);
+                            }
+                        }
+                        _ => {
+                            return Err(mlua::Error::RuntimeError(
+                                "flow:command expects command name (string) or table of names"
+                                    .into(),
+                            ));
+                        }
+                    }
+
+                    if let Ok(mut cmds) = coord_cmd.commands.write() {
+                        cmds.push(FlowCommandMatcher {
+                            commands: cmd_list,
+                            action,
+                        });
+                    }
+                    Ok(())
+                },
+            )?;
+            flow_table.set("command", cmd_fn)?;
+
+            // flow:on(pattern, action) OR flow.on(pattern, action)
+            let coord_global = Arc::clone(&coordinator);
+            let on_fn = lua_outer.create_function(
+                move |_, (arg1, arg2, arg3): (Value, Option<Value>, Option<Value>)| {
+                    let (pattern_val, action_val) = match (arg1, arg2, arg3) {
+                        (Value::Table(_), Some(p), Some(a)) => (p, a),
+                        (p, Some(a), _) => (p, a),
+                        _ => {
+                            return Err(mlua::Error::RuntimeError(
+                                "flow:on requires pattern and action function".into(),
+                            ));
+                        }
+                    };
+
+                    let action: Function = match action_val {
+                        Value::Function(f) => f,
+                        _ => {
+                            return Err(mlua::Error::RuntimeError(
+                                "flow:on action must be a function".into(),
                             ));
                         }
                     };
@@ -199,7 +261,7 @@ pub fn register_flow_api(lua: &Lua, ox_table: &Table) -> Result<(), mlua::Error>
                         }
                         _ => {
                             return Err(mlua::Error::RuntimeError(
-                                "flow:on_match pattern must be a string or array of strings".into(),
+                                "flow:on pattern must be a string or array of strings".into(),
                             ));
                         }
                     }
@@ -215,7 +277,7 @@ pub fn register_flow_api(lua: &Lua, ox_table: &Table) -> Result<(), mlua::Error>
                     Ok(())
                 },
             )?;
-            flow_table.set("on_match", on_match_fn)?;
+            flow_table.set("on", on_fn)?;
 
             // flow:go_to(step_name, [chat_id]) OR flow.go_to(step_name, [chat_id])
             let coord_goto = Arc::clone(&coordinator);
@@ -305,19 +367,126 @@ pub fn register_flow_api(lua: &Lua, ox_table: &Table) -> Result<(), mlua::Error>
                 lua_outer.globals().get::<Table>("ox")?.get("on_message")?;
 
             let filter_table = lua_outer.create_table()?;
-            if let Some(ref chats) = coordinator.target_chats {
-                if chats.len() == 1 {
-                    filter_table.set("chats", chats[0])?;
-                } else {
-                    let t = lua_outer.create_table()?;
-                    for (i, c) in chats.iter().enumerate() {
-                        t.set(i + 1, *c)?;
+            if let Some(ref opts) = options_val {
+                if let Ok(v) = opts.get::<Value>("chats") {
+                    filter_table.set("chats", v)?;
+                } else if let Some(ref chats) = coordinator.target_chats {
+                    if chats.len() == 1 {
+                        filter_table.set("chats", chats[0])?;
+                    } else {
+                        let t = lua_outer.create_table()?;
+                        for (i, c) in chats.iter().enumerate() {
+                            t.set(i + 1, *c)?;
+                        }
+                        filter_table.set("chats", t)?;
                     }
-                    filter_table.set("chats", t)?;
                 }
+                if let Ok(v) = opts.get::<Value>("senders") {
+                    filter_table.set("senders", v)?;
+                }
+                if let Ok(v) = opts.get::<bool>("incoming") {
+                    filter_table.set("incoming", v)?;
+                } else if !opts.contains_key("outgoing")? {
+                    filter_table.set("incoming", true)?;
+                }
+                if let Ok(v) = opts.get::<bool>("outgoing") {
+                    filter_table.set("outgoing", v)?;
+                }
+                if let Ok(v) = opts.get::<bool>("private") {
+                    filter_table.set("private", v)?;
+                }
+                if let Ok(v) = opts.get::<bool>("group") {
+                    filter_table.set("group", v)?;
+                }
+                if let Ok(v) = opts.get::<bool>("channel") {
+                    filter_table.set("channel", v)?;
+                }
+                if let Ok(v) = opts.get::<bool>("has_text") {
+                    filter_table.set("has_text", v)?;
+                } else {
+                    filter_table.set("has_text", true)?;
+                }
+            } else {
+                filter_table.set("incoming", true)?;
+                filter_table.set("has_text", true)?;
             }
-            filter_table.set("incoming", true)?;
-            filter_table.set("has_text", true)?;
+
+            // Context builder helper
+            let build_context = |lua: &Lua,
+                                 coord: &Arc<FlowCoordinator>,
+                                 chat_id: i64,
+                                 active_step: &str,
+                                 ctx_data_sub: &Table|
+             -> Result<Table, mlua::Error> {
+                let ctx = lua.create_table()?;
+                ctx.set("step", active_step)?;
+                ctx.set("data", ctx_data_sub.clone())?;
+
+                let coord_ctx = Arc::clone(coord);
+                let go_to = lua.create_function(move |_, (arg1, arg2): (Value, Option<Value>)| {
+                    let target_step = match (arg1, arg2) {
+                        (Value::Table(_), Some(s)) => value_to_string(s)?,
+                        (s, _) => value_to_string(s)?,
+                    };
+                    if let Ok(mut map) = coord_ctx.current_steps.write() {
+                        map.insert(chat_id, target_step);
+                    }
+                    Ok(())
+                })?;
+                ctx.set("go_to", go_to)?;
+
+                let coord_ctx_reset = Arc::clone(coord);
+                let reset = lua.create_function(move |_, _: Option<Value>| {
+                    let init = coord_ctx_reset
+                        .initial_step
+                        .read()
+                        .ok()
+                        .and_then(|g| g.clone())
+                        .unwrap_or_default();
+                    if let Ok(mut map) = coord_ctx_reset.current_steps.write() {
+                        map.insert(chat_id, init);
+                    }
+                    Ok(())
+                })?;
+                ctx.set("reset", reset)?;
+
+                let data_get = ctx_data_sub.clone();
+                let get_fn = lua.create_function(
+                    move |_, (a1, a2, a3): (Value, Option<Value>, Option<Value>)| {
+                        let (key, default) = match (a1, a2, a3) {
+                            (Value::Table(_), Some(k), def) => (value_to_string(k)?, def),
+                            (k, def, _) => (value_to_string(k)?, def),
+                        };
+                        let val: Value = data_get.get(key.as_str()).unwrap_or(Value::Nil);
+                        if val == Value::Nil {
+                            Ok(default.unwrap_or(Value::Nil))
+                        } else {
+                            Ok(val)
+                        }
+                    },
+                )?;
+                ctx.set("get", get_fn)?;
+
+                let data_set = ctx_data_sub.clone();
+                let set_fn = lua.create_function(
+                    move |_, (a1, a2, a3): (Value, Option<Value>, Option<Value>)| {
+                        let (key, val) = match (a1, a2, a3) {
+                            (Value::Table(_), Some(k), Some(v)) => (value_to_string(k)?, v),
+                            (k, Some(v), _) => (value_to_string(k)?, v),
+                            _ => {
+                                return Err(mlua::Error::RuntimeError(
+                                    "ctx:set requires key and value".into(),
+                                ));
+                            }
+                        };
+                        data_set.set(key, val)?;
+                        Ok(())
+                    },
+                )?;
+                ctx.set("set", set_fn)?;
+
+                Ok(ctx)
+            };
 
             let dispatch_fn = lua_outer.create_async_function(move |lua, event_table: Table| {
                 let coord = Arc::clone(&coord_disp);
@@ -328,7 +497,68 @@ pub fn register_flow_api(lua: &Lua, ox_table: &Table) -> Result<(), mlua::Error>
                     let chat_id: i64 = event_table.get("chat_id")?;
                     let text_lower = text.to_lowercase();
 
-                    // 1. Check global matchers
+                    // 1. Check command routes
+                    let (cmd_name, _) = crate::infrastructure::lua::stdlib::extract_command(&text);
+                    if let Some(cmd) = cmd_name {
+                        let matched_cmd = {
+                            let mut found = None;
+                            if let Ok(cmds) = coord.commands.read() {
+                                for c in cmds.iter() {
+                                    if c.commands.iter().any(|name| name == &cmd) {
+                                        found = Some(c.action.clone());
+                                        break;
+                                    }
+                                }
+                            }
+                            found
+                        };
+
+                        if let Some(cmd_action) = matched_cmd {
+                            let active_step_name = {
+                                let mut res = String::new();
+                                if let Ok(mut map) = coord.current_steps.write() {
+                                    if let Some(step) = map.get(&chat_id) {
+                                        res = step.clone();
+                                    } else {
+                                        let init = coord
+                                            .initial_step
+                                            .read()
+                                            .ok()
+                                            .and_then(|g| g.clone())
+                                            .unwrap_or_default();
+                                        map.insert(chat_id, init.clone());
+                                        res = init;
+                                    }
+                                }
+                                res
+                            };
+
+                            let ctx = build_context(
+                                &lua,
+                                &coord,
+                                chat_id,
+                                &active_step_name,
+                                &ctx_data_sub,
+                            )?;
+                            let result_val: Value =
+                                cmd_action.call_async((event_table.clone(), ctx)).await?;
+
+                            if let Value::String(s) = result_val {
+                                let target = s.to_str()?.to_string();
+                                tracing::info!(
+                                    target: "oxidegram",
+                                    "[FLOW] [{}] Command /{cmd} -> step {target}",
+                                    coord.name
+                                );
+                                if let Ok(mut map) = coord.current_steps.write() {
+                                    map.insert(chat_id, target);
+                                }
+                            }
+                            return Ok(());
+                        }
+                    }
+
+                    // 2. Check global matchers
                     let matched_global = {
                         let mut found = None;
                         if let Ok(globals) = coord.globals.read() {
@@ -343,11 +573,35 @@ pub fn register_flow_api(lua: &Lua, ox_table: &Table) -> Result<(), mlua::Error>
                     };
 
                     if let Some(global_action) = matched_global {
-                        let _ = global_action.call_async::<()>(event_table).await;
+                        let active_step_name = {
+                            let mut res = String::new();
+                            if let Ok(map) = coord.current_steps.read()
+                                && let Some(step) = map.get(&chat_id)
+                            {
+                                res = step.clone();
+                            }
+                            res
+                        };
+                        let ctx = build_context(
+                            &lua,
+                            &coord,
+                            chat_id,
+                            &active_step_name,
+                            &ctx_data_sub,
+                        )?;
+                        let result_val: Value =
+                            global_action.call_async((event_table.clone(), ctx)).await?;
+
+                        if let Value::String(s) = result_val {
+                            let target = s.to_str()?.to_string();
+                            if let Ok(mut map) = coord.current_steps.write() {
+                                map.insert(chat_id, target);
+                            }
+                        }
                         return Ok(());
                     }
 
-                    // 2. Resolve active step
+                    // 3. Resolve active step
                     let active_step_name = {
                         let mut res = String::new();
                         if let Ok(mut map) = coord.current_steps.write() {
@@ -435,39 +689,13 @@ pub fn register_flow_api(lua: &Lua, ox_table: &Table) -> Result<(), mlua::Error>
                         }
 
                         // Build ctx table
-                        let ctx = lua.create_table()?;
-                        ctx.set("step", active_step_name.clone())?;
-                        ctx.set("data", ctx_data_sub)?;
-
-                        let coord_ctx = Arc::clone(&coord);
-                        let go_to = lua.create_function(
-                            move |_, (arg1, arg2): (Value, Option<Value>)| {
-                                let target_step = match (arg1, arg2) {
-                                    (Value::Table(_), Some(s)) => value_to_string(s)?,
-                                    (s, _) => value_to_string(s)?,
-                                };
-                                if let Ok(mut map) = coord_ctx.current_steps.write() {
-                                    map.insert(chat_id, target_step);
-                                }
-                                Ok(())
-                            },
+                        let ctx = build_context(
+                            &lua,
+                            &coord,
+                            chat_id,
+                            &active_step_name,
+                            &ctx_data_sub,
                         )?;
-                        ctx.set("go_to", go_to)?;
-
-                        let coord_ctx_reset = Arc::clone(&coord);
-                        let reset = lua.create_function(move |_, _: Option<Value>| {
-                            let init = coord_ctx_reset
-                                .initial_step
-                                .read()
-                                .ok()
-                                .and_then(|g| g.clone())
-                                .unwrap_or_default();
-                            if let Ok(mut map) = coord_ctx_reset.current_steps.write() {
-                                map.insert(chat_id, init);
-                            }
-                            Ok(())
-                        })?;
-                        ctx.set("reset", reset)?;
 
                         let result_val: Value = action.call_async((event_table, ctx)).await?;
 
@@ -562,13 +790,13 @@ mod tests {
                 end
             })
 
-            -- on_match with colon and string
-            dialog:on_match("stop", function(event)
+            -- on with colon and string
+            dialog:on("stop", function(event)
                 dialog:reset()
             end)
 
-            -- on_match with dot and table of strings
-            dialog.on_match({ "cancel", "exit" }, function(event)
+            -- on with dot and table of strings
+            dialog.on({ "cancel", "exit" }, function(event)
                 dialog.reset()
             end)
 
@@ -585,6 +813,55 @@ mod tests {
             dialog.reset(12345)
             assert(dialog.current_step(12345) == "menu")
 
+            return true
+        "#;
+
+        let res: bool = lua.load(script).eval().unwrap();
+        assert!(res);
+    }
+
+    #[test]
+    fn test_flow_commands_and_on_helpers() {
+        let lua = Lua::new();
+        let ox = lua.create_table().unwrap();
+
+        ox.set(
+            "on_message",
+            lua.create_function(|_, (_filter, _cb): (Table, Function)| Ok(()))
+                .unwrap(),
+        )
+        .unwrap();
+
+        register_flow_api(&lua, &ox).unwrap();
+        lua.globals().set("ox", ox).unwrap();
+
+        let script = r#"
+            local bot = ox.flow("assistant", { private = true })
+
+            -- Command routing
+            bot:command("start", function(event, ctx)
+                ctx:set("started", true)
+                return "onboarding"
+            end)
+
+            bot:command({ "help", "info" }, function(event, ctx)
+                return "help"
+            end)
+
+            -- Global pattern / filter handler with :on
+            bot:on("cancel", function(event, ctx)
+                ctx:reset()
+            end)
+
+            -- Steps
+            bot:step("onboarding", {
+                action = function(event, ctx)
+                    return "done"
+                end
+            })
+
+            assert(bot.name == "assistant")
+            assert(bot.data ~= nil)
             return true
         "#;
 

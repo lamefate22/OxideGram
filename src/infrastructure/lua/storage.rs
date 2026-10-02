@@ -281,8 +281,7 @@ pub fn register_storage_api(
             Ok(removed)
         }
     })?;
-    storage_table.set("delete", del_fn.clone())?;
-    storage_table.set("remove", del_fn)?;
+    storage_table.set("delete", del_fn)?;
 
     // ox.storage.all() -> table
     let store_all = storage.clone();

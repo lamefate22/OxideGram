@@ -8,6 +8,11 @@ use crate::domain::automation::{
 use crate::domain::types::{ChatId, SenderId};
 use crate::errors::{OxideError, ScriptError};
 use crate::infrastructure::IO_TIMEOUT;
+use crate::infrastructure::lua::api::{
+    parse_click_button_args, parse_delete_message_args, parse_edit_message_args, parse_file_args,
+    parse_forward_args, parse_media_send_args, parse_pin_args, parse_react_args,
+    parse_select_options, parse_send_message_args,
+};
 use crate::infrastructure::lua::buttons::markup_to_lua_table;
 use crate::infrastructure::lua::filters::parse_message_filter;
 use crate::infrastructure::lua::storage::BotStorage;
@@ -97,7 +102,7 @@ impl BotSimulator {
         let ox = self.lua.create_table().map_err(ScriptError::LuaError)?;
 
         // Stdlib string methods & random helpers
-        crate::infrastructure::lua::stdlib::register_stdlib(&self.lua)
+        crate::infrastructure::lua::stdlib::register_stdlib(&self.lua, Some(&ox))
             .map_err(ScriptError::LuaError)?;
         crate::infrastructure::lua::stdlib::register_random_helpers(&self.lua, &ox)
             .map_err(ScriptError::LuaError)?;
@@ -108,18 +113,13 @@ impl BotSimulator {
         )
         .map_err(ScriptError::LuaError)?;
 
-        // ox.send_message
+        // ox.send_message & ox.reply
         let send_fn = self
             .lua
             .create_async_function(
-                |_, (chat_id, text, opt_val): (i64, String, Option<Value>)| async move {
-                    let delay = match opt_val {
-                        Some(Value::Number(n)) => Some(n),
-                        Some(Value::Integer(i)) => Some(i as f64),
-                        Some(Value::Table(t)) => t.get::<Option<f64>>("delay").unwrap_or(None),
-                        _ => None,
-                    };
-                    if let Some(d) = delay {
+                |_, (arg1, arg2, arg3): (Value, Option<Value>, Option<Value>)| async move {
+                    let (chat_id, text, opts) = parse_send_message_args(arg1, arg2, arg3)?;
+                    if let Some(d) = opts.delay {
                         println!("  \x1b[32m[BOT SEND]\x1b[0m Chat: {chat_id} | Text: \"{text}\" (delay: {d:.1}s)");
                     } else {
                         println!("  \x1b[32m[BOT SEND]\x1b[0m Chat: {chat_id} | Text: \"{text}\"");
@@ -128,15 +128,16 @@ impl BotSimulator {
                 },
             )
             .map_err(ScriptError::LuaError)?;
-        ox.set("send_message", send_fn.clone())
+        ox.set("send_message", send_fn)
             .map_err(ScriptError::LuaError)?;
-        ox.set("reply", send_fn).map_err(ScriptError::LuaError)?;
 
         // ox.send_image
         let image_fn = self
             .lua
             .create_function(
-                |_, (chat_id, path, caption): (i64, String, Option<String>)| {
+                |_, (a1, a2, a3, a4): (Value, Option<Value>, Option<Value>, Option<Value>)| {
+                    let (chat_id, path, caption, _) =
+                        parse_media_send_args("send_image", a1, a2, a3, a4)?;
                     let cap = caption.unwrap_or_default();
                     println!("  \x1b[32m[BOT IMAGE]\x1b[0m Chat: {chat_id} | Path: \"{path}\" | Caption: \"{cap}\"");
                     Ok(())
@@ -146,11 +147,56 @@ impl BotSimulator {
         ox.set("send_image", image_fn)
             .map_err(ScriptError::LuaError)?;
 
+        // ox.send_document
+        let doc_fn = self
+            .lua
+            .create_function(
+                |_, (a1, a2, a3, a4): (Value, Option<Value>, Option<Value>, Option<Value>)| {
+                    let (chat_id, path, caption, _) =
+                        parse_media_send_args("send_document", a1, a2, a3, a4)?;
+                    let cap = caption.unwrap_or_default();
+                    println!("  \x1b[32m[BOT DOC]\x1b[0m Chat: {chat_id} | Path: \"{path}\" | Caption: \"{cap}\"");
+                    Ok(())
+                },
+            )
+            .map_err(ScriptError::LuaError)?;
+        ox.set("send_document", doc_fn)
+            .map_err(ScriptError::LuaError)?;
+
+        // ox.send_audio
+        let audio_fn = self
+            .lua
+            .create_function(
+                |_, (a1, a2, a3, a4): (Value, Option<Value>, Option<Value>, Option<Value>)| {
+                    let (chat_id, path, caption, _) =
+                        parse_media_send_args("send_audio", a1, a2, a3, a4)?;
+                    let cap = caption.unwrap_or_default();
+                    println!("  \x1b[32m[BOT AUDIO]\x1b[0m Chat: {chat_id} | Path: \"{path}\" | Caption: \"{cap}\"");
+                    Ok(())
+                },
+            )
+            .map_err(ScriptError::LuaError)?;
+        ox.set("send_audio", audio_fn)
+            .map_err(ScriptError::LuaError)?;
+
+        // ox.send_voice
+        let voice_fn = self
+            .lua
+            .create_function(|_, (a1, a2, a3): (Value, Option<Value>, Option<Value>)| {
+                let (chat_id, path, _, _) = parse_media_send_args("send_voice", a1, a2, None, a3)?;
+                println!("  \x1b[32m[BOT VOICE]\x1b[0m Chat: {chat_id} | Path: \"{path}\"");
+                Ok(())
+            })
+            .map_err(ScriptError::LuaError)?;
+        ox.set("send_voice", voice_fn)
+            .map_err(ScriptError::LuaError)?;
+
         // ox.click_button
         let click_btn_fn = self
             .lua
             .create_function(
-                |lua, (chat_id, msg_id, data): (i64, i32, String)| {
+                |lua, (arg1, arg2, arg3): (Value, Option<Value>, Option<Value>)| {
+                    let (chat_id, msg_id, data) = parse_click_button_args(arg1, arg2, arg3)?;
                     println!("  \x1b[33m[BOT CLICK_BUTTON]\x1b[0m Chat: {chat_id} | Msg: {msg_id} | Data: \"{data}\"");
                     let res = lua.create_table()?;
                     res.set("message", "Simulated button callback answer")?;
@@ -164,10 +210,14 @@ impl BotSimulator {
         // ox.edit_message
         let edit_fn = self
             .lua
-            .create_function(|_, (chat_id, msg_id, new_text): (i64, i32, String)| {
-                println!("  \x1b[36m[BOT EDIT]\x1b[0m Chat: {chat_id} | Msg: {msg_id} | Text: \"{new_text}\"");
-                Ok(())
-            })
+            .create_function(
+                |_, (a1, a2, a3, a4): (Value, Option<Value>, Option<Value>, Option<Value>)| {
+                    let (chat_id, msg_id, new_text, _) =
+                        parse_edit_message_args(a1, a2, a3, a4)?;
+                    println!("  \x1b[36m[BOT EDIT]\x1b[0m Chat: {chat_id} | Msg: {msg_id} | Text: \"{new_text}\"");
+                    Ok(())
+                },
+            )
             .map_err(ScriptError::LuaError)?;
         ox.set("edit_message", edit_fn)
             .map_err(ScriptError::LuaError)?;
@@ -175,84 +225,62 @@ impl BotSimulator {
         // ox.delete_message
         let del_fn = self
             .lua
-            .create_function(|_, (chat_id, _): (i64, Value)| {
-                println!("  \x1b[31m[BOT DELETE]\x1b[0m Chat: {chat_id} | Messages deleted");
-                Ok(())
-            })
+            .create_function(
+                |_, (arg1, arg2, arg3): (Value, Option<Value>, Option<Value>)| {
+                    let (chat_id, ids, _) = parse_delete_message_args(arg1, arg2, arg3)?;
+                    println!(
+                        "  \x1b[31m[BOT DELETE]\x1b[0m Chat: {chat_id} | Messages deleted: {ids:?}"
+                    );
+                    Ok(())
+                },
+            )
             .map_err(ScriptError::LuaError)?;
-        ox.set("delete_message", del_fn.clone())
-            .map_err(ScriptError::LuaError)?;
-        ox.set("delete_messages", del_fn)
+        ox.set("delete_message", del_fn)
             .map_err(ScriptError::LuaError)?;
 
-        // ox.send_reaction
+        // ox.react
         let react_fn = self
             .lua
-            .create_function(|_, (chat_id, msg_id, emoji): (i64, i32, String)| {
-                println!(
-                    "  \x1b[35m[BOT REACT]\x1b[0m Chat: {chat_id} | Msg: {msg_id} | Emoji: {emoji}"
-                );
-                Ok(())
-            })
+            .create_function(
+                |_, (a1, a2, a3, a4): (Value, Option<Value>, Option<Value>, Option<Value>)| {
+                    let (chat_id, msg_id, emoji, _) = parse_react_args(a1, a2, a3, a4)?;
+                    println!(
+                        "  \x1b[35m[BOT REACT]\x1b[0m Chat: {chat_id} | Msg: {msg_id} | Emoji: {emoji}"
+                    );
+                    Ok(())
+                },
+            )
             .map_err(ScriptError::LuaError)?;
-        ox.set("send_reaction", react_fn)
+        ox.set("react", react_fn).map_err(ScriptError::LuaError)?;
+
+        // ox.pin_message
+        let pin_fn = self
+            .lua
+            .create_function(
+                |_, (arg1, arg2, arg3): (Value, Option<Value>, Option<Value>)| {
+                    let (chat_id, msg_id, _) = parse_pin_args(arg1, arg2, arg3)?;
+                    println!("  \x1b[35m[BOT PIN]\x1b[0m Chat: {chat_id} | Msg: {msg_id}");
+                    Ok(())
+                },
+            )
+            .map_err(ScriptError::LuaError)?;
+        ox.set("pin_message", pin_fn)
             .map_err(ScriptError::LuaError)?;
 
-        // Helper to parse select options from a Lua table
-        fn parse_select_options(val: &Value) -> Result<(Vec<String>, Vec<String>), mlua::Error> {
-            let t = match val {
-                Value::Table(t) => t,
-                _ => return Err(mlua::Error::RuntimeError("Options must be a table".into())),
-            };
-
-            let mut labels = Vec::new();
-            let mut values = Vec::new();
-
-            for pair in t.sequence_values::<Value>() {
-                let item = pair.map_err(|e| {
-                    mlua::Error::RuntimeError(format!("Invalid select option: {e}"))
-                })?;
-                match item {
-                    Value::String(s) => {
-                        let s_str = s
-                            .to_str()
-                            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?
-                            .to_string();
-                        labels.push(s_str.clone());
-                        values.push(s_str);
-                    }
-                    Value::Table(item_table) => {
-                        let label: String = item_table
-                            .get("label")
-                            .or_else(|_| item_table.get("name"))
-                            .or_else(|_| item_table.get("text"))
-                            .map_err(|_| {
-                                mlua::Error::RuntimeError(
-                                    "Select option table must have 'label' or 'name'".into(),
-                                )
-                            })?;
-                        let val: String = item_table.get("value").unwrap_or_else(|_| label.clone());
-                        labels.push(label);
-                        values.push(val);
-                    }
-                    other => {
-                        let s = other
-                            .to_string()
-                            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
-                        labels.push(s.clone());
-                        values.push(s);
-                    }
-                }
-            }
-
-            if labels.is_empty() {
-                return Err(mlua::Error::RuntimeError(
-                    "Select options array cannot be empty".into(),
-                ));
-            }
-
-            Ok((labels, values))
-        }
+        // ox.forward_message
+        let fwd_fn = self
+            .lua
+            .create_function(
+                |_, (arg1, arg2, arg3): (Value, Option<Value>, Option<Value>)| {
+                    let (to_chat_id, from_chat_id, msg_id) =
+                        parse_forward_args(arg1, arg2, arg3)?;
+                    println!("  \x1b[34m[BOT FORWARD]\x1b[0m To: {to_chat_id} | From: {from_chat_id} | Msg: {msg_id}");
+                    Ok(())
+                },
+            )
+            .map_err(ScriptError::LuaError)?;
+        ox.set("forward_message", fwd_fn)
+            .map_err(ScriptError::LuaError)?;
 
         // ox.select
         let console_clone = Arc::clone(&self.console);
@@ -298,64 +326,140 @@ impl BotSimulator {
             .map_err(ScriptError::LuaError)?;
 
         // ox.input
+        // ox.input
         let console_clone = Arc::clone(&self.console);
         let input_fn = self
             .lua
-            .create_function(move |_, (prompt, second_arg): (String, Option<Value>)| {
-                match second_arg {
-                    Some(Value::String(s)) => {
-                        let s_str = s
-                            .to_str()
-                            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
-                        console_clone
-                            .ask_input(&prompt, Some(&s_str))
-                            .map_err(mlua::Error::RuntimeError)
+            .create_function(move |lua, (arg1, second_arg): (Value, Option<Value>)| {
+                let (prompt, opt_arg) = match arg1 {
+                    Value::Table(ref t) if t.contains_key("prompt")? => {
+                        let p: String = t.get("prompt")?;
+                        let def: Option<String> = t.get("default").ok();
+                        let def_val = match def {
+                            Some(s) => Some(Value::String(lua.create_string(&s)?)),
+                            None => None,
+                        };
+                        (p, def_val)
                     }
-                    Some(Value::Table(cfg)) => {
-                        if let Ok(options_val) = cfg.get::<Value>("options") {
-                            let (labels, values) = parse_select_options(&options_val)?;
-                            let default: Option<String> = cfg.get("default").ok();
-                            let default_label = default.as_ref().and_then(|def| {
-                                values
-                                    .iter()
-                                    .position(|v| v.eq_ignore_ascii_case(def))
-                                    .or_else(|| {
-                                        labels.iter().position(|l| l.eq_ignore_ascii_case(def))
-                                    })
-                                    .map(|idx| labels[idx].clone())
-                            });
+                    Value::String(s) => (s.to_str()?.to_string(), second_arg),
+                    _ => {
+                        return Err(mlua::Error::RuntimeError(
+                            "input requires prompt string or table with 'prompt'".into(),
+                        ));
+                    }
+                };
 
-                            let selected_label = console_clone
-                                .ask_select(&prompt, labels.clone(), default_label.as_deref())
-                                .map_err(mlua::Error::RuntimeError)?;
-
-                            let idx = labels
-                                .iter()
-                                .position(|l| l == &selected_label)
-                                .unwrap_or(0);
-                            Ok(values[idx].clone())
-                        } else {
-                            let default: Option<String> = cfg.get("default").ok();
-                            console_clone
-                                .ask_input(&prompt, default.as_deref())
-                                .map_err(mlua::Error::RuntimeError)
-                        }
-                    }
-                    None => console_clone
-                        .ask_input(&prompt, None)
-                        .map_err(mlua::Error::RuntimeError),
-                    Some(other) => {
-                        let s = other
-                            .to_string()
-                            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
-                        console_clone
-                            .ask_input(&prompt, Some(&s))
-                            .map_err(mlua::Error::RuntimeError)
-                    }
-                }
+                let default_str = match opt_arg {
+                    Some(Value::String(s)) => Some(
+                        s.to_str()
+                            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?
+                            .to_string(),
+                    ),
+                    Some(Value::Integer(i)) => Some(i.to_string()),
+                    Some(Value::Number(n)) => Some(n.to_string()),
+                    _ => None,
+                };
+                console_clone
+                    .ask_input(&prompt, default_str.as_deref())
+                    .map_err(mlua::Error::RuntimeError)
             })
             .map_err(ScriptError::LuaError)?;
         ox.set("input", input_fn).map_err(ScriptError::LuaError)?;
+
+        // ox.file
+        let console_clone = Arc::clone(&self.console);
+        let file_fn = self
+            .lua
+            .create_function(move |_, (arg1, arg2): (Value, Option<Value>)| {
+                let (prompt, default, must_exist, extensions) = parse_file_args(arg1, arg2)?;
+                console_clone
+                    .ask_file(&prompt, default.as_deref(), must_exist, extensions)
+                    .map_err(mlua::Error::RuntimeError)
+            })
+            .map_err(ScriptError::LuaError)?;
+        ox.set("file", file_fn).map_err(ScriptError::LuaError)?;
+
+        // ox.log
+        let log_table = self.lua.create_table().map_err(ScriptError::LuaError)?;
+        let log_info = self
+            .lua
+            .create_function(|_, msg: Value| {
+                println!("  \x1b[32m[LOG:INFO]\x1b[0m {msg:?}");
+                Ok(())
+            })
+            .map_err(ScriptError::LuaError)?;
+        let log_warn = self
+            .lua
+            .create_function(|_, msg: Value| {
+                println!("  \x1b[33m[LOG:WARN]\x1b[0m {msg:?}");
+                Ok(())
+            })
+            .map_err(ScriptError::LuaError)?;
+        let log_error = self
+            .lua
+            .create_function(|_, msg: Value| {
+                println!("  \x1b[31m[LOG:ERROR]\x1b[0m {msg:?}");
+                Ok(())
+            })
+            .map_err(ScriptError::LuaError)?;
+        let log_debug = self
+            .lua
+            .create_function(|_, msg: Value| {
+                println!("  \x1b[90m[LOG:DEBUG]\x1b[0m {msg:?}");
+                Ok(())
+            })
+            .map_err(ScriptError::LuaError)?;
+        log_table
+            .set("info", log_info)
+            .map_err(ScriptError::LuaError)?;
+        log_table
+            .set("warn", log_warn)
+            .map_err(ScriptError::LuaError)?;
+        log_table
+            .set("error", log_error)
+            .map_err(ScriptError::LuaError)?;
+        log_table
+            .set("debug", log_debug)
+            .map_err(ScriptError::LuaError)?;
+        ox.set("log", log_table).map_err(ScriptError::LuaError)?;
+
+        // ox.send_typing
+        let typing_fn = self
+            .lua
+            .create_function(|_, chat_id: i64| {
+                println!("  \x1b[90m[BOT TYPING]\x1b[0m Chat: {chat_id}");
+                Ok(())
+            })
+            .map_err(ScriptError::LuaError)?;
+        ox.set("send_typing", typing_fn)
+            .map_err(ScriptError::LuaError)?;
+
+        // ox.set_interval / ox.set_timeout / ox.clear_timer
+        let timer_fn = self
+            .lua
+            .create_function(|_, (secs, _cb): (f64, Function)| {
+                println!("  \x1b[90m[BOT TIMER]\x1b[0m Registered timer for {secs:.1}s");
+                Ok(1u64)
+            })
+            .map_err(ScriptError::LuaError)?;
+        ox.set("set_interval", timer_fn.clone())
+            .map_err(ScriptError::LuaError)?;
+        ox.set("set_timeout", timer_fn)
+            .map_err(ScriptError::LuaError)?;
+
+        let clear_timer_fn = self
+            .lua
+            .create_function(|_, id: u64| {
+                println!("  \x1b[90m[BOT TIMER]\x1b[0m Cleared timer {id}");
+                Ok(true)
+            })
+            .map_err(ScriptError::LuaError)?;
+        ox.set("clear_timer", clear_timer_fn.clone())
+            .map_err(ScriptError::LuaError)?;
+        ox.set("clear_interval", clear_timer_fn.clone())
+            .map_err(ScriptError::LuaError)?;
+        ox.set("clear_timeout", clear_timer_fn)
+            .map_err(ScriptError::LuaError)?;
 
         // ox.sleep
         let sleep_fn = self
@@ -412,10 +516,7 @@ impl BotSimulator {
             .map_err(ScriptError::LuaError)?;
 
         let globals = self.lua.globals();
-        globals
-            .set("ox", ox.clone())
-            .map_err(ScriptError::LuaError)?;
-        globals.set("nox", ox).map_err(ScriptError::LuaError)?;
+        globals.set("ox", ox).map_err(ScriptError::LuaError)?;
 
         Ok(())
     }
@@ -453,6 +554,38 @@ impl BotSimulator {
         }
 
         Ok(())
+    }
+
+    /// Checks if a Lua value is the simulated event table.
+    fn is_sim_event_table(val: &Value) -> bool {
+        if let Value::Table(t) = val {
+            t.contains_key("incoming").unwrap_or(false)
+                && t.contains_key("chat_id").unwrap_or(false)
+        } else {
+            false
+        }
+    }
+
+    /// Shifts arguments if called with method colon syntax `event:method(...)`.
+    fn shift_sim_event_args(
+        a1: Value,
+        a2: Option<Value>,
+        a3: Option<Value>,
+    ) -> (Value, Option<Value>, Option<Value>) {
+        if Self::is_sim_event_table(&a1) {
+            (a2.unwrap_or(Value::Nil), a3, None)
+        } else {
+            (a1, a2, a3)
+        }
+    }
+
+    /// Converts an optional Lua value to f64 delay.
+    fn value_to_f64(val: Option<Value>) -> Option<f64> {
+        match val {
+            Some(Value::Number(n)) => Some(n),
+            Some(Value::Integer(i)) => Some(i as f64),
+            _ => None,
+        }
     }
 
     /// Creates a simulated `event` Lua table matching production runner semantics.
@@ -519,19 +652,32 @@ impl BotSimulator {
         // event.reply
         let reply_fn = self
             .lua
-            .create_function(|_, (a1, a2): (Value, Option<Value>)| {
-                let reply_text = match (a1, a2) {
-                    (Value::Table(_), Some(Value::String(s))) => s.to_str()?.to_string(),
-                    (Value::Table(_), Some(Value::Integer(i))) => i.to_string(),
-                    (Value::String(s), _) => s.to_str()?.to_string(),
-                    (Value::Integer(i), _) => i.to_string(),
-                    _ => {
-                        return Err(mlua::Error::RuntimeError(
-                            "reply expects text message as first argument".into(),
-                        ));
-                    }
+            .create_function(|_, (a1, a2, a3): (Value, Option<Value>, Option<Value>)| {
+                let (arg1, delay_val, _) = Self::shift_sim_event_args(a1, a2, a3);
+                let (reply_text, delay) = if let Value::Table(ref t) = arg1 {
+                    let text: String = t
+                        .get("text")
+                        .or_else(|_| t.get("message"))
+                        .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+                    let d: Option<f64> = t.get("delay").ok();
+                    (text, d)
+                } else {
+                    let text = match arg1 {
+                        Value::String(s) => s.to_str()?.to_string(),
+                        Value::Integer(i) => i.to_string(),
+                        Value::Number(n) => n.to_string(),
+                        _ => {
+                            return Err(mlua::Error::RuntimeError(
+                                "reply expects text message or table".into(),
+                            ));
+                        }
+                    };
+                    (text, Self::value_to_f64(delay_val))
                 };
-                println!("  \x1b[32m[EVENT REPLY]\x1b[0m \"{reply_text}\"");
+                let d_str = delay
+                    .map(|d| format!(" (delay: {d:.1}s)"))
+                    .unwrap_or_default();
+                println!("  \x1b[32m[EVENT REPLY]\x1b[0m \"{reply_text}\"{d_str}");
                 Ok(())
             })
             .map_err(ScriptError::LuaError)?;
@@ -546,25 +692,20 @@ impl BotSimulator {
             .create_async_function(
                 move |_, (a1, a2, a3): (Value, Option<Value>, Option<Value>)| {
                     let markup = markup_copy.clone();
-                    let (query_val, delay) = match (a1, a2, a3) {
-                        (Value::Table(_), Some(q), d) => {
-                            let d_val = match d {
-                                Some(Value::Number(n)) => Some(n),
-                                Some(Value::Integer(i)) => Some(i as f64),
-                                _ => None,
-                            };
-                            (q, d_val)
-                        }
-                        (q, d, _) => {
-                            let d_val = match d {
-                                Some(Value::Number(n)) => Some(n),
-                                Some(Value::Integer(i)) => Some(i as f64),
-                                _ => None,
-                            };
-                            (q, d_val)
-                        }
-                    };
                     async move {
+                        let (arg1, delay_val, _) = Self::shift_sim_event_args(a1, a2, a3);
+                        let (query_val, delay) = if let Value::Table(ref t) = arg1 {
+                            let q: Value = t
+                                .get("query")
+                                .or_else(|_| t.get("text"))
+                                .or_else(|_| t.get("index"))
+                                .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+                            let d: Option<f64> = t.get("delay").ok();
+                            (q, d)
+                        } else {
+                            (arg1, Self::value_to_f64(delay_val))
+                        };
+
                         let d_str = delay
                             .map(|d| format!(" (delay: {d:.1}s)"))
                             .unwrap_or_default();
@@ -608,24 +749,38 @@ impl BotSimulator {
             )
             .map_err(ScriptError::LuaError)?;
         event
-            .set("click", click_fn.clone())
-            .map_err(ScriptError::LuaError)?;
-        event
-            .set("click_button", click_fn)
+            .set("click", click_fn)
             .map_err(ScriptError::LuaError)?;
 
         // event.edit
         let edit_fn = self
             .lua
-            .create_function(|_, (a1, a2): (Value, Option<Value>)| {
-                let new_text = match (a1, a2) {
-                    (Value::Table(_), Some(Value::String(s))) => s.to_str()?.to_string(),
-                    (Value::Table(_), Some(Value::Integer(i))) => i.to_string(),
-                    (Value::String(s), _) => s.to_str()?.to_string(),
-                    (Value::Integer(i), _) => i.to_string(),
-                    _ => return Err(mlua::Error::RuntimeError("edit expects string text".into())),
+            .create_function(|_, (a1, a2, a3): (Value, Option<Value>, Option<Value>)| {
+                let (arg1, delay_val, _) = Self::shift_sim_event_args(a1, a2, a3);
+                let (new_text, delay) = if let Value::Table(ref t) = arg1 {
+                    let text: String = t
+                        .get("text")
+                        .or_else(|_| t.get("message"))
+                        .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+                    let d: Option<f64> = t.get("delay").ok();
+                    (text, d)
+                } else {
+                    let text = match arg1 {
+                        Value::String(s) => s.to_str()?.to_string(),
+                        Value::Integer(i) => i.to_string(),
+                        Value::Number(n) => n.to_string(),
+                        _ => {
+                            return Err(mlua::Error::RuntimeError(
+                                "edit expects new text as first argument or table".into(),
+                            ));
+                        }
+                    };
+                    (text, Self::value_to_f64(delay_val))
                 };
-                println!("  \x1b[36m[EVENT EDIT]\x1b[0m \"{new_text}\"");
+                let d_str = delay
+                    .map(|d| format!(" (delay: {d:.1}s)"))
+                    .unwrap_or_default();
+                println!("  \x1b[36m[EVENT EDIT]\x1b[0m \"{new_text}\"{d_str}");
                 Ok(())
             })
             .map_err(ScriptError::LuaError)?;
@@ -634,8 +789,22 @@ impl BotSimulator {
         // event.delete
         let del_fn = self
             .lua
-            .create_function(|_, _: Option<Value>| {
-                println!("  \x1b[31m[EVENT DELETE]\x1b[0m Message deleted");
+            .create_function(|_, (a1, a2): (Option<Value>, Option<Value>)| {
+                let delay = if a1.as_ref().map(Self::is_sim_event_table).unwrap_or(false) {
+                    if let Some(Value::Table(ref t)) = a2 {
+                        t.get::<Option<f64>>("delay").unwrap_or(None)
+                    } else {
+                        Self::value_to_f64(a2)
+                    }
+                } else if let Some(Value::Table(ref t)) = a1 {
+                    t.get::<Option<f64>>("delay").unwrap_or(None)
+                } else {
+                    Self::value_to_f64(a1)
+                };
+                let d_str = delay
+                    .map(|d| format!(" (delay: {d:.1}s)"))
+                    .unwrap_or_default();
+                println!("  \x1b[31m[EVENT DELETE]\x1b[0m Message deleted{d_str}");
                 Ok(())
             })
             .map_err(ScriptError::LuaError)?;
@@ -644,23 +813,60 @@ impl BotSimulator {
         // event.react
         let react_fn = self
             .lua
-            .create_function(|_, (a1, a2): (Value, Option<Value>)| {
-                let emoji = match (a1, a2) {
-                    (Value::Table(_), Some(Value::String(s))) => s.to_str()?.to_string(),
-                    (Value::String(s), _) => s.to_str()?.to_string(),
-                    _ => {
-                        return Err(mlua::Error::RuntimeError(
-                            "react expects emoji string".into(),
-                        ));
-                    }
+            .create_function(|_, (a1, a2, a3): (Value, Option<Value>, Option<Value>)| {
+                let (arg1, delay_val, _) = Self::shift_sim_event_args(a1, a2, a3);
+                let (emoji, delay) = if let Value::Table(ref t) = arg1 {
+                    let e: String = t
+                        .get("reaction")
+                        .or_else(|_| t.get("emoji"))
+                        .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+                    let d: Option<f64> = t.get("delay").ok();
+                    (e, d)
+                } else {
+                    let e = match arg1 {
+                        Value::String(s) => s.to_str()?.to_string(),
+                        _ => {
+                            return Err(mlua::Error::RuntimeError(
+                                "react expects emoji string or table".into(),
+                            ));
+                        }
+                    };
+                    (e, Self::value_to_f64(delay_val))
                 };
-                println!("  \x1b[35m[EVENT REACT]\x1b[0m Emoji: {emoji}");
+                let d_str = delay
+                    .map(|d| format!(" (delay: {d:.1}s)"))
+                    .unwrap_or_default();
+                println!("  \x1b[35m[EVENT REACT]\x1b[0m Emoji: {emoji}{d_str}");
                 Ok(())
             })
             .map_err(ScriptError::LuaError)?;
         event
             .set("react", react_fn)
             .map_err(ScriptError::LuaError)?;
+
+        // event.pin
+        let pin_fn = self
+            .lua
+            .create_function(|_, (a1, a2): (Option<Value>, Option<Value>)| {
+                let delay = if a1.as_ref().map(Self::is_sim_event_table).unwrap_or(false) {
+                    if let Some(Value::Table(ref t)) = a2 {
+                        t.get::<Option<f64>>("delay").unwrap_or(None)
+                    } else {
+                        Self::value_to_f64(a2)
+                    }
+                } else if let Some(Value::Table(ref t)) = a1 {
+                    t.get::<Option<f64>>("delay").unwrap_or(None)
+                } else {
+                    Self::value_to_f64(a1)
+                };
+                let d_str = delay
+                    .map(|d| format!(" (delay: {d:.1}s)"))
+                    .unwrap_or_default();
+                println!("  \x1b[35m[EVENT PIN]\x1b[0m Message pinned{d_str}");
+                Ok(())
+            })
+            .map_err(ScriptError::LuaError)?;
+        event.set("pin", pin_fn).map_err(ScriptError::LuaError)?;
 
         Ok(event)
     }
@@ -823,6 +1029,16 @@ mod tests {
         fn ask_confirm(&self, _prompt: &str, default: Option<bool>) -> Result<bool, String> {
             Ok(default.unwrap_or(true))
         }
+
+        fn ask_file(
+            &self,
+            _prompt: &str,
+            default: Option<&str>,
+            _must_exist: bool,
+            _allowed_extensions: Option<Vec<String>>,
+        ) -> Result<String, String> {
+            Ok(default.unwrap_or("test.txt").to_string())
+        }
     }
 
     #[tokio::test]
@@ -861,15 +1077,28 @@ mod tests {
             .unwrap();
         assert!(!res);
 
-        // 4. ox.input with options table
+        // 4. ox.input with default string and table
         let res: String = sim
             .lua
-            .load(
-                r#"return ox.input("Mode?", { options = { "text", "grades" }, default = "text" })"#,
-            )
+            .load(r#"return ox.input("Mode?", "text")"#)
             .eval()
             .unwrap();
         assert_eq!(res, "text");
+
+        let res_tbl: String = sim
+            .lua
+            .load(r#"return ox.input { prompt = "Mode?", default = "text_named" }"#)
+            .eval()
+            .unwrap();
+        assert_eq!(res_tbl, "text_named");
+
+        // 5. ox.file
+        let file_res: String = sim
+            .lua
+            .load(r#"return ox.file("Path?", { default = "config.json", must_exist = false })"#)
+            .eval()
+            .unwrap();
+        assert_eq!(file_res, "config.json");
     }
 
     #[tokio::test]
@@ -883,7 +1112,20 @@ mod tests {
                 event:reply("hello")
                 event:edit("new text")
                 event:react("👍")
+                event:pin()
                 event:delete()
+
+                -- Named table syntax
+                event:reply { text = "table reply", delay = 0.01 }
+                event:edit { text = "table edit" }
+                event:react { emoji = "🔥" }
+                event:pin { delay = 0.01 }
+                event:delete { delay = 0.01 }
+
+                -- Standalone ox functions with named table syntax
+                ox.send_message { chat_id = 12345, text = "hi named" }
+                ox.send_image { chat_id = 12345, path = "pic.png", caption = "photo" }
+
                 handled = true
             end)
             return true

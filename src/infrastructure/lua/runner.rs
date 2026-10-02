@@ -5,8 +5,9 @@ use crate::domain::automation::{ChatType, FilterMatchResult, MessageContext, Mes
 use crate::domain::types::{ChatId, SenderId};
 use crate::errors::{OxideError, ScriptError};
 use crate::infrastructure::lua::api::{
-    RegisteredHandler, TimerHub, apply_optional_delay, build_input_message, invoke_send_message,
-    invoke_with_flood_wait, parse_message_options, register_ox_table, resolve_peer_ref,
+    MessageOptions, RegisteredHandler, TimerHub, apply_optional_delay, build_input_message,
+    invoke_send_message, invoke_with_flood_wait, parse_message_options, register_ox_table,
+    resolve_peer_ref,
 };
 use crate::infrastructure::lua::buttons::{
     ReplyMarkupAction, markup_to_lua_table, parse_reply_markup_action,
@@ -459,16 +460,25 @@ impl LuaBotRunner {
         Ok(())
     }
 
+    /// Checks if a Lua value is the event table instance.
+    fn is_event_table(val: &Value) -> bool {
+        if let Value::Table(t) = val {
+            t.contains_key("incoming").unwrap_or(false)
+                && t.contains_key("chat_id").unwrap_or(false)
+        } else {
+            false
+        }
+    }
+
     /// Helper to shift Lua arguments when a method is called with colon syntax `event:method(...)`
     /// where `arg1` is the `event` table (`self`).
     fn shift_event_args(
         a1: Value,
         a2: Option<Value>,
         a3: Option<Value>,
-        a4: Option<Value>,
     ) -> (Value, Option<Value>, Option<Value>) {
-        if matches!(a1, Value::Table(_)) {
-            (a2.unwrap_or(Value::Nil), a3, a4)
+        if Self::is_event_table(&a1) {
+            (a2.unwrap_or(Value::Nil), a3, None)
         } else {
             (a1, a2, a3)
         }
@@ -558,31 +568,44 @@ impl LuaBotRunner {
             .set("buttons", buttons_table)
             .map_err(ScriptError::LuaError)?;
 
-        // event.reply(reply_text, [options_or_delay], [extra_delay])
+        // event.reply(reply_text, [options_or_delay]) OR event:reply { text = ..., delay = ... }
         let client_reply = self.client.clone();
         let reply_fn = self
             .lua
             .create_async_function(
-                move |_, (a1, a2, a3, a4): (Value, Option<Value>, Option<Value>, Option<Value>)| {
+                move |_, (a1, a2, a3): (Value, Option<Value>, Option<Value>)| {
                     let client = client_reply.clone();
                     async move {
-                        let (reply_val, opt_val, extra_delay_val) =
-                            Self::shift_event_args(a1, a2, a3, a4);
-                        let reply_text = match reply_val {
-                            Value::String(s) => s.to_str()?.to_string(),
-                            Value::Integer(i) => i.to_string(),
-                            Value::Number(n) => n.to_string(),
-                            _ => {
+                        let (arg1, opt_val, _) = Self::shift_event_args(a1, a2, a3);
+                        let (reply_text, opts) = if let Value::Table(ref t) = arg1 {
+                            if t.contains_key("text")? || t.contains_key("message")? {
+                                let text: String = t
+                                    .get("text")
+                                    .or_else(|_| t.get("message"))
+                                    .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+                                let delay: Option<f64> = t.get("delay").ok();
+                                let parse_mode: Option<String> = t.get("parse_mode").ok();
+                                (text, MessageOptions { delay, parse_mode })
+                            } else {
                                 return Err(mlua::Error::RuntimeError(
-                                    "reply expects text message as first argument".into(),
+                                    "reply named table requires 'text'".into(),
                                 ));
                             }
+                        } else {
+                            let text = match arg1 {
+                                Value::String(s) => s.to_str()?.to_string(),
+                                Value::Integer(i) => i.to_string(),
+                                Value::Number(n) => n.to_string(),
+                                _ => {
+                                    return Err(mlua::Error::RuntimeError(
+                                        "reply expects text message or table".into(),
+                                    ));
+                                }
+                            };
+                            let opts = parse_message_options(opt_val)?;
+                            (text, opts)
                         };
-                        let extra_delay = Self::value_to_f64(extra_delay_val);
-                        let mut opts = parse_message_options(opt_val)?;
-                        if extra_delay.is_some() {
-                            opts.delay = extra_delay;
-                        }
+
                         apply_optional_delay(opts.delay).await;
 
                         let reply_message =
@@ -606,7 +629,7 @@ impl LuaBotRunner {
             .set("reply", reply_fn)
             .map_err(ScriptError::LuaError)?;
 
-        // event.edit(new_text, [options_or_delay])
+        // event.edit(new_text, [options_or_delay]) OR event:edit { text = ..., delay = ... }
         let client_edit = self.client.clone();
         let edit_fn = self
             .lua
@@ -614,18 +637,36 @@ impl LuaBotRunner {
                 move |_, (a1, a2, a3): (Value, Option<Value>, Option<Value>)| {
                     let client = client_edit.clone();
                     async move {
-                        let (text_val, opt_val, _) = Self::shift_event_args(a1, a2, a3, None);
-                        let new_text = match text_val {
-                            Value::String(s) => s.to_str()?.to_string(),
-                            Value::Integer(i) => i.to_string(),
-                            Value::Number(n) => n.to_string(),
-                            _ => {
+                        let (arg1, opt_val, _) = Self::shift_event_args(a1, a2, a3);
+                        let (new_text, opts) = if let Value::Table(ref t) = arg1 {
+                            if t.contains_key("text")? || t.contains_key("message")? {
+                                let text: String = t
+                                    .get("text")
+                                    .or_else(|_| t.get("message"))
+                                    .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+                                let delay: Option<f64> = t.get("delay").ok();
+                                let parse_mode: Option<String> = t.get("parse_mode").ok();
+                                (text, MessageOptions { delay, parse_mode })
+                            } else {
                                 return Err(mlua::Error::RuntimeError(
-                                    "edit expects new text as first argument".into(),
+                                    "edit named table requires 'text'".into(),
                                 ));
                             }
+                        } else {
+                            let text = match arg1 {
+                                Value::String(s) => s.to_str()?.to_string(),
+                                Value::Integer(i) => i.to_string(),
+                                Value::Number(n) => n.to_string(),
+                                _ => {
+                                    return Err(mlua::Error::RuntimeError(
+                                        "edit expects new text as first argument".into(),
+                                    ));
+                                }
+                            };
+                            let opts = parse_message_options(opt_val)?;
+                            (text, opts)
                         };
-                        let opts = parse_message_options(opt_val)?;
+
                         apply_optional_delay(opts.delay).await;
                         let input_msg = build_input_message(&new_text, opts.parse_mode.as_deref());
 
@@ -648,17 +689,25 @@ impl LuaBotRunner {
             .set("edit", edit_fn)
             .map_err(ScriptError::LuaError)?;
 
-        // event.delete([delay])
+        // event.delete([delay]) OR event:delete { delay = ... }
         let client_del = self.client.clone();
         let delete_fn = self
             .lua
             .create_async_function(move |_, (a1, a2): (Option<Value>, Option<Value>)| {
                 let client = client_del.clone();
                 async move {
-                    let delay = match (a1, a2) {
-                        (Some(Value::Table(_)), d) => Self::value_to_f64(d),
-                        (d, _) => Self::value_to_f64(d),
+                    let delay = if a1.as_ref().map(Self::is_event_table).unwrap_or(false) {
+                        if let Some(Value::Table(ref t)) = a2 {
+                            t.get::<Option<f64>>("delay").unwrap_or(None)
+                        } else {
+                            Self::value_to_f64(a2)
+                        }
+                    } else if let Some(Value::Table(ref t)) = a1 {
+                        t.get::<Option<f64>>("delay").unwrap_or(None)
+                    } else {
+                        Self::value_to_f64(a1)
                     };
+
                     apply_optional_delay(delay).await;
                     tokio::time::timeout(
                         NETWORK_TIMEOUT,
@@ -675,7 +724,7 @@ impl LuaBotRunner {
             .set("delete", delete_fn)
             .map_err(ScriptError::LuaError)?;
 
-        // event.react(emoji, [delay])
+        // event.react(emoji, [delay]) OR event:react { emoji = ..., delay = ... }
         let client_react = self.client.clone();
         let react_fn = self
             .lua
@@ -683,16 +732,26 @@ impl LuaBotRunner {
                 move |_, (a1, a2, a3): (Value, Option<Value>, Option<Value>)| {
                     let client = client_react.clone();
                     async move {
-                        let (emoji_val, delay_val, _) = Self::shift_event_args(a1, a2, a3, None);
-                        let emoji = match emoji_val {
-                            Value::String(s) => s.to_str()?.to_string(),
-                            _ => {
-                                return Err(mlua::Error::RuntimeError(
-                                    "react expects emoji string as first argument".into(),
-                                ));
-                            }
+                        let (arg1, delay_val, _) = Self::shift_event_args(a1, a2, a3);
+                        let (emoji, delay) = if let Value::Table(ref t) = arg1 {
+                            let e: String = t
+                                .get("reaction")
+                                .or_else(|_| t.get("emoji"))
+                                .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+                            let d: Option<f64> = t.get("delay").ok();
+                            (e, d)
+                        } else {
+                            let e = match arg1 {
+                                Value::String(s) => s.to_str()?.to_string(),
+                                _ => {
+                                    return Err(mlua::Error::RuntimeError(
+                                        "react expects emoji string or table".into(),
+                                    ));
+                                }
+                            };
+                            (e, Self::value_to_f64(delay_val))
                         };
-                        let delay = Self::value_to_f64(delay_val);
+
                         apply_optional_delay(delay).await;
                         tokio::time::timeout(
                             NETWORK_TIMEOUT,
@@ -712,17 +771,25 @@ impl LuaBotRunner {
             .set("react", react_fn)
             .map_err(ScriptError::LuaError)?;
 
-        // event.pin([delay])
+        // event.pin([delay]) OR event:pin { delay = ... }
         let client_pin = self.client.clone();
         let pin_fn = self
             .lua
             .create_async_function(move |_, (a1, a2): (Option<Value>, Option<Value>)| {
                 let client = client_pin.clone();
                 async move {
-                    let delay = match (a1, a2) {
-                        (Some(Value::Table(_)), d) => Self::value_to_f64(d),
-                        (d, _) => Self::value_to_f64(d),
+                    let delay = if a1.as_ref().map(Self::is_event_table).unwrap_or(false) {
+                        if let Some(Value::Table(ref t)) = a2 {
+                            t.get::<Option<f64>>("delay").unwrap_or(None)
+                        } else {
+                            Self::value_to_f64(a2)
+                        }
+                    } else if let Some(Value::Table(ref t)) = a1 {
+                        t.get::<Option<f64>>("delay").unwrap_or(None)
+                    } else {
+                        Self::value_to_f64(a1)
                     };
+
                     apply_optional_delay(delay).await;
                     tokio::time::timeout(NETWORK_TIMEOUT, client.pin_message(peer_ref, message_id))
                         .await
@@ -748,8 +815,19 @@ impl LuaBotRunner {
                     let client = client_click.clone();
                     let markup = markup_click.clone();
                     async move {
-                        let (query_val, delay_val, _) = Self::shift_event_args(a1, a2, a3, None);
-                        let delay = Self::value_to_f64(delay_val);
+                        let (arg1, delay_val, _) = Self::shift_event_args(a1, a2, a3);
+                        let (query_val, delay) = if let Value::Table(ref t) = arg1 {
+                            let q: Value = t
+                                .get("query")
+                                .or_else(|_| t.get("text"))
+                                .or_else(|_| t.get("index"))
+                                .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+                            let d: Option<f64> = t.get("delay").ok();
+                            (q, d)
+                        } else {
+                            (arg1, Self::value_to_f64(delay_val))
+                        };
+
                         apply_optional_delay(delay).await;
                         let btn = match &query_val {
                             Value::Integer(i) if *i >= 1 => {
@@ -821,10 +899,7 @@ impl LuaBotRunner {
             )
             .map_err(ScriptError::LuaError)?;
         event_table
-            .set("click", click_fn.clone())
-            .map_err(ScriptError::LuaError)?;
-        event_table
-            .set("click_button", click_fn)
+            .set("click", click_fn)
             .map_err(ScriptError::LuaError)?;
 
         Ok(event_table)

@@ -794,6 +794,84 @@ pub fn parse_select_options(val: &Value) -> Result<(Vec<String>, Vec<String>), m
     Ok((labels, values))
 }
 
+/// Helper to parse `ox.select` arguments, supporting both positional:
+/// `(prompt, options, default)`
+/// and single-table named form:
+/// `{ prompt = "...", options = { ... }, default = "..." }`.
+pub fn parse_select_args(
+    arg1: Value,
+    arg2: Option<Value>,
+    arg3: Option<Value>,
+) -> Result<(String, Value, Option<String>), mlua::Error> {
+    if let Value::Table(ref t) = arg1
+        && t.contains_key("prompt")?
+        && (t.contains_key("options")? || t.contains_key("choices")?)
+    {
+        let p: String = t.get("prompt")?;
+        let opts: Value = t
+            .get("options")
+            .or_else(|_| t.get("choices"))
+            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+        let def: Option<String> = t.get("default").ok();
+        return Ok((p, opts, def));
+    }
+
+    let p = match arg1 {
+        Value::String(s) => s.to_str()?.to_string(),
+        _ => {
+            return Err(mlua::Error::RuntimeError(
+                "select requires prompt string or options table".into(),
+            ));
+        }
+    };
+    let opts =
+        arg2.ok_or_else(|| mlua::Error::RuntimeError("select requires options table".into()))?;
+    let def = match arg3 {
+        Some(Value::String(s)) => Some(s.to_str()?.to_string()),
+        Some(Value::Integer(i)) => Some(i.to_string()),
+        Some(Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    };
+    Ok((p, opts, def))
+}
+
+/// Helper to parse `ox.confirm` arguments, supporting both positional:
+/// `(prompt, default)`
+/// and single-table named form:
+/// `{ prompt = "...", default = true }`.
+pub fn parse_confirm_args(
+    arg1: Value,
+    arg2: Option<bool>,
+) -> Result<(String, Option<bool>), mlua::Error> {
+    match arg1 {
+        Value::Table(ref t) if t.contains_key("prompt")? => {
+            let p: String = t.get("prompt")?;
+            let def: Option<bool> = t.get("default").ok();
+            Ok((p, def))
+        }
+        Value::String(s) => Ok((s.to_str()?.to_string(), arg2)),
+        _ => Err(mlua::Error::RuntimeError(
+            "confirm requires prompt string or table with 'prompt'".into(),
+        )),
+    }
+}
+
+/// Helper to extract formatted log message supporting both `ox.log.info("msg")`
+/// and `ox.log:info("msg")`.
+pub fn extract_log_msg(a1: Value, a2: Option<Value>) -> Result<String, mlua::Error> {
+    let val = match (a1, a2) {
+        (Value::Table(_), Some(v)) => v,
+        (v, _) => v,
+    };
+    match val {
+        Value::String(s) => Ok(s.to_str()?.to_string()),
+        Value::Integer(i) => Ok(i.to_string()),
+        Value::Number(n) => Ok(n.to_string()),
+        Value::Boolean(b) => Ok(b.to_string()),
+        _ => Ok(format!("{val:?}")),
+    }
+}
+
 /// Invokes a raw MTProto request with automatic backoff retry on FloodWait.
 pub async fn invoke_with_flood_wait<R: tl::RemoteCall>(
     client: &Client,
@@ -1390,19 +1468,6 @@ pub fn register_ox_table(
 
     // ox.log table
     let log_table = lua.create_table().map_err(ScriptError::LuaError)?;
-    let extract_log_msg = |a1: Value, a2: Option<Value>| -> Result<String, mlua::Error> {
-        let val = match (a1, a2) {
-            (Value::Table(_), Some(v)) => v,
-            (v, _) => v,
-        };
-        match val {
-            Value::String(s) => Ok(s.to_str()?.to_string()),
-            Value::Integer(i) => Ok(i.to_string()),
-            Value::Number(n) => Ok(n.to_string()),
-            Value::Boolean(b) => Ok(b.to_string()),
-            _ => Ok(format!("{val:?}")),
-        }
-    };
 
     let log_info = lua
         .create_function(move |_, (a1, a2): (Value, Option<Value>)| {
@@ -1454,60 +1519,7 @@ pub fn register_ox_table(
     let select_fn = lua
         .create_function(
             move |_, (arg1, arg2, arg3): (Value, Option<Value>, Option<Value>)| {
-                let (prompt, options_val, default) = if let Value::Table(ref t) = arg1 {
-                    if t.contains_key("prompt")?
-                        && (t.contains_key("options")? || t.contains_key("choices")?)
-                    {
-                        let p: String = t.get("prompt")?;
-                        let opts: Value = t
-                            .get("options")
-                            .or_else(|_| t.get("choices"))
-                            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
-                        let def: Option<String> = t.get("default").ok();
-                        (p, opts, def)
-                    } else {
-                        let p = match arg1 {
-                            Value::String(s) => s.to_str()?.to_string(),
-                            _ => {
-                                return Err(mlua::Error::RuntimeError(
-                                    "select requires prompt string or options table".into(),
-                                ));
-                            }
-                        };
-                        let opts = arg2.ok_or_else(|| {
-                            mlua::Error::RuntimeError("select requires options table".into())
-                        })?;
-                        (
-                            p,
-                            opts,
-                            arg3.and_then(|v| match v {
-                                Value::String(s) => s.to_str().ok().map(|x| x.to_string()),
-                                _ => None,
-                            }),
-                        )
-                    }
-                } else {
-                    let p = match arg1 {
-                        Value::String(s) => s.to_str()?.to_string(),
-                        _ => {
-                            return Err(mlua::Error::RuntimeError(
-                                "select requires prompt string".into(),
-                            ));
-                        }
-                    };
-                    let opts = arg2.ok_or_else(|| {
-                        mlua::Error::RuntimeError("select requires options table".into())
-                    })?;
-                    (
-                        p,
-                        opts,
-                        arg3.and_then(|v| match v {
-                            Value::String(s) => s.to_str().ok().map(|x| x.to_string()),
-                            _ => None,
-                        }),
-                    )
-                };
-
+                let (prompt, options_val, default) = parse_select_args(arg1, arg2, arg3)?;
                 let (labels, values) = parse_select_options(&options_val)?;
 
                 let default_label = default.as_ref().and_then(|def| {
@@ -1538,19 +1550,7 @@ pub fn register_ox_table(
     let console_clone = Arc::clone(&console);
     let confirm_fn = lua
         .create_function(move |_, (arg1, arg2): (Value, Option<bool>)| {
-            let (prompt, default) = match arg1 {
-                Value::Table(ref t) if t.contains_key("prompt")? => {
-                    let p: String = t.get("prompt")?;
-                    let def: Option<bool> = t.get("default").ok();
-                    (p, def)
-                }
-                Value::String(s) => (s.to_str()?.to_string(), arg2),
-                _ => {
-                    return Err(mlua::Error::RuntimeError(
-                        "confirm requires prompt string or table".into(),
-                    ));
-                }
-            };
+            let (prompt, default) = parse_confirm_args(arg1, arg2)?;
             console_clone
                 .ask_confirm(&prompt, default)
                 .map_err(mlua::Error::RuntimeError)

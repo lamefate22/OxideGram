@@ -9,9 +9,10 @@ use crate::domain::types::{ChatId, SenderId};
 use crate::errors::{OxideError, ScriptError};
 use crate::infrastructure::IO_TIMEOUT;
 use crate::infrastructure::lua::api::{
-    parse_click_button_args, parse_delete_message_args, parse_edit_message_args, parse_file_args,
-    parse_forward_args, parse_media_send_args, parse_pin_args, parse_react_args,
-    parse_select_options, parse_send_message_args,
+    extract_log_msg, parse_click_button_args, parse_confirm_args, parse_delete_message_args,
+    parse_edit_message_args, parse_file_args, parse_forward_args, parse_media_send_args,
+    parse_pin_args, parse_react_args, parse_select_args, parse_select_options,
+    parse_send_message_args,
 };
 use crate::infrastructure::lua::buttons::markup_to_lua_table;
 use crate::infrastructure::lua::filters::parse_message_filter;
@@ -287,7 +288,8 @@ impl BotSimulator {
         let select_fn = self
             .lua
             .create_function(
-                move |_, (prompt, options_val, default): (String, Value, Option<String>)| {
+                move |_, (arg1, arg2, arg3): (Value, Option<Value>, Option<Value>)| {
+                    let (prompt, options_val, default) = parse_select_args(arg1, arg2, arg3)?;
                     let (labels, values) = parse_select_options(&options_val)?;
 
                     let default_label = default.as_ref().and_then(|def| {
@@ -316,7 +318,8 @@ impl BotSimulator {
         let console_clone = Arc::clone(&self.console);
         let confirm_fn = self
             .lua
-            .create_function(move |_, (prompt, default): (String, Option<bool>)| {
+            .create_function(move |_, (arg1, arg2): (Value, Option<bool>)| {
+                let (prompt, default) = parse_confirm_args(arg1, arg2)?;
                 console_clone
                     .ask_confirm(&prompt, default)
                     .map_err(mlua::Error::RuntimeError)
@@ -383,29 +386,33 @@ impl BotSimulator {
         let log_table = self.lua.create_table().map_err(ScriptError::LuaError)?;
         let log_info = self
             .lua
-            .create_function(|_, msg: Value| {
-                println!("  \x1b[32m[LOG:INFO]\x1b[0m {msg:?}");
+            .create_function(|_, (a1, a2): (Value, Option<Value>)| {
+                let msg = extract_log_msg(a1, a2)?;
+                println!("  \x1b[32m[LOG:INFO]\x1b[0m {msg}");
                 Ok(())
             })
             .map_err(ScriptError::LuaError)?;
         let log_warn = self
             .lua
-            .create_function(|_, msg: Value| {
-                println!("  \x1b[33m[LOG:WARN]\x1b[0m {msg:?}");
+            .create_function(|_, (a1, a2): (Value, Option<Value>)| {
+                let msg = extract_log_msg(a1, a2)?;
+                println!("  \x1b[33m[LOG:WARN]\x1b[0m {msg}");
                 Ok(())
             })
             .map_err(ScriptError::LuaError)?;
         let log_error = self
             .lua
-            .create_function(|_, msg: Value| {
-                println!("  \x1b[31m[LOG:ERROR]\x1b[0m {msg:?}");
+            .create_function(|_, (a1, a2): (Value, Option<Value>)| {
+                let msg = extract_log_msg(a1, a2)?;
+                println!("  \x1b[31m[LOG:ERROR]\x1b[0m {msg}");
                 Ok(())
             })
             .map_err(ScriptError::LuaError)?;
         let log_debug = self
             .lua
-            .create_function(|_, msg: Value| {
-                println!("  \x1b[90m[LOG:DEBUG]\x1b[0m {msg:?}");
+            .create_function(|_, (a1, a2): (Value, Option<Value>)| {
+                let msg = extract_log_msg(a1, a2)?;
+                println!("  \x1b[90m[LOG:DEBUG]\x1b[0m {msg}");
                 Ok(())
             })
             .map_err(ScriptError::LuaError)?;
@@ -1059,6 +1066,16 @@ mod tests {
             .unwrap();
         assert_eq!(res, "grades");
 
+        // 1b. ox.select with named table syntax
+        let res_named: String = sim
+            .lua
+            .load(
+                r#"return ox.select { prompt = "Working mode?", options = { "text", "grade" }, default = "text" }"#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(res_named, "text");
+
         // 2. ox.select with table items { label, value }
         let res: String = sim
             .lua
@@ -1076,6 +1093,14 @@ mod tests {
             .eval()
             .unwrap();
         assert!(!res);
+
+        // 3b. ox.confirm with named table
+        let res_named_conf: bool = sim
+            .lua
+            .load(r#"return ox.confirm { prompt = "Delete?", default = false }"#)
+            .eval()
+            .unwrap();
+        assert!(!res_named_conf);
 
         // 4. ox.input with default string and table
         let res: String = sim
@@ -1099,6 +1124,12 @@ mod tests {
             .eval()
             .unwrap();
         assert_eq!(file_res, "config.json");
+
+        // 6. ox.log dot and colon syntax
+        sim.lua
+            .load(r#"ox.log.info("dot log"); ox.log:info("colon log")"#)
+            .exec()
+            .unwrap();
     }
 
     #[tokio::test]

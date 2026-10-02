@@ -95,17 +95,25 @@ mod tests {
     fn anonchat_script_loads_with_startup_input_api() {
         let lua = Lua::new();
         let ox = lua.create_table().unwrap();
-        let input = lua
+        crate::infrastructure::lua::stdlib::register_stdlib(&lua, Some(&ox)).unwrap();
+
+        let select = lua
             .create_function(
-                |_, (prompt, _): (String, Option<String>)| match prompt.as_str() {
-                    "Enable premium search? [y/N]" => Ok("n"),
-                    "Spam mode (text/photo/combined)" => Ok("text"),
-                    "Message to send" => Ok("hello"),
-                    _ => Err(mlua::Error::RuntimeError(format!(
-                        "unexpected prompt: {prompt}"
-                    ))),
+                |_, (arg1, arg2, arg3): (Value, Option<Value>, Option<Value>)| {
+                    let (_, _, def) =
+                        crate::infrastructure::lua::api::parse_select_args(arg1, arg2, arg3)?;
+                    Ok(def.unwrap_or_else(|| "text".to_string()))
                 },
             )
+            .unwrap();
+        let confirm = lua
+            .create_function(|_, (arg1, arg2): (Value, Option<bool>)| {
+                let (_, def) = crate::infrastructure::lua::api::parse_confirm_args(arg1, arg2)?;
+                Ok(def.unwrap_or(false))
+            })
+            .unwrap();
+        let input = lua
+            .create_function(|_, (_prompt, _def): (Value, Option<String>)| Ok("hello".to_string()))
             .unwrap();
         let handlers = Arc::new(AtomicUsize::new(0));
         let handler_count = Arc::clone(&handlers);
@@ -116,6 +124,8 @@ mod tests {
             })
             .unwrap();
 
+        ox.set("select", select).unwrap();
+        ox.set("confirm", confirm).unwrap();
         ox.set("input", input).unwrap();
         ox.set("on_message", on_message).unwrap();
         ox.set(
@@ -128,6 +138,7 @@ mod tests {
             lua.create_function(|_, _: Value| Ok(())).unwrap(),
         )
         .unwrap();
+        crate::infrastructure::lua::flow::register_flow_api(&lua, &ox).unwrap();
         lua.globals().set("ox", ox).unwrap();
 
         lua.load(include_str!("../../../data/bots/anonchat.lua"))

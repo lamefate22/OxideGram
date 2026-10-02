@@ -8,12 +8,7 @@
   },
   "diagnostics": {
     "globals": [
-      "ox",
-      "contains",
-      "starts_with",
-      "ends_with",
-      "split",
-      "trim"
+      "ox"
     ]
   },
   "hint": {

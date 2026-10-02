@@ -30,6 +30,35 @@
 -- 2. Message Event
 --------------------------------------------------------------------------------
 
+--- Options table for event:reply.
+---@class EventReplyTableOptions : MessageOptions
+---@field text string Message content to send.
+
+--- Options table for event:edit.
+---@class EventEditTableOptions : MessageOptions
+---@field text string New message content.
+
+--- Options table for event:react.
+---@class EventReactTableOptions
+---@field reaction? string Emoji to react with.
+---@field emoji? string Alias for reaction.
+---@field delay? number Optional delay in seconds.
+
+--- Options table for event:click.
+---@class EventClickTableOptions
+---@field query? string Button text or substring to match.
+---@field text? string Alias for query.
+---@field index? integer 1-based index of button.
+---@field delay? number Optional delay in seconds.
+
+--- Options table for event:pin.
+---@class EventPinTableOptions
+---@field delay? number Optional delay in seconds.
+
+--- Options table for event:delete.
+---@class EventDeleteTableOptions
+---@field delay? number Optional delay in seconds.
+
 --- Enriched Telegram message event passed to message callbacks and flow actions.
 ---@class MessageEvent
 ---@field text string Content of the message.
@@ -48,48 +77,88 @@
 local MessageEvent = {}
 
 --- Replies directly to this message with a quote (`reply_to`).
+--- Supports both positional syntax and named table syntax.
+---
+--- Example:
+--- ```lua
+--- event:reply("Hello!")
+--- event:reply { text = "Hello with delay", delay = 1.0 }
+--- ```
+---@overload fun(self: MessageEvent, options: EventReplyTableOptions): nil
 ---@param text string Message text content.
 ---@param options? MessageOptions|number Options table or numeric delay in seconds.
 ---@return nil
-function MessageEvent.reply(text, options) end
+function MessageEvent:reply(text, options) end
 
 --- Edits this message with new text.
+--- Supports both positional syntax and named table syntax.
+---
+--- Example:
+--- ```lua
+--- event:edit("Updated text")
+--- event:edit { text = "Updated with mode", parse_mode = "markdown" }
+--- ```
+---@overload fun(self: MessageEvent, options: EventEditTableOptions): nil
 ---@param new_text string New message text.
 ---@param options? MessageOptions|number Options table or numeric delay in seconds.
 ---@return nil
-function MessageEvent.edit(new_text, options) end
+function MessageEvent:edit(new_text, options) end
 
 --- Deletes this message.
+---
+--- Example:
+--- ```lua
+--- event:delete()
+--- event:delete(2.0)
+--- event:delete { delay = 2.0 }
+--- ```
+---@overload fun(self: MessageEvent, options: EventDeleteTableOptions): nil
 ---@param delay? number Optional delay in seconds before deleting.
 ---@return nil
-function MessageEvent.delete(delay) end
+function MessageEvent:delete(delay) end
 
 --- Sends an emoji reaction to this message.
+---
+--- Example:
+--- ```lua
+--- event:react("👍")
+--- event:react { emoji = "🔥", delay = 0.5 }
+--- ```
+---@overload fun(self: MessageEvent, options: EventReactTableOptions): nil
 ---@param emoji string Reaction emoji (e.g. "👍", "🔥", "❤️").
 ---@param delay? number Optional delay in seconds.
 ---@return nil
-function MessageEvent.react(emoji, delay) end
+function MessageEvent:react(emoji, delay) end
 
 --- Pins this message in the chat.
+---
+--- Example:
+--- ```lua
+--- event:pin()
+--- event:pin { delay = 0.5 }
+--- ```
+---@overload fun(self: MessageEvent, options: EventPinTableOptions): nil
 ---@param delay? number Optional delay in seconds.
 ---@return nil
-function MessageEvent.pin(delay) end
+function MessageEvent:pin(delay) end
 
 --- Clicks an inline button or simulates pressing a regular reply keyboard button.
 ---
 --- Supports exact text, case-insensitive substring, emoji match, or 1-based numeric index.
 --- If the button is an inline callback button, executes MTProto `GetBotCallbackAnswer`.
 --- If the button is a reply keyboard button, sends the button label text to the chat.
+---
+--- Example:
+--- ```lua
+--- event:click("Next")
+--- event:click(1)
+--- event:click { query = "Next", delay = 1.0 }
+--- ```
+---@overload fun(self: MessageEvent, options: EventClickTableOptions): BotCallbackAnswer|boolean
 ---@param query_or_index string|integer Button label text or 1-based index (e.g. `1` for the first button).
 ---@param delay? number Optional delay in seconds.
 ---@return BotCallbackAnswer|boolean Result of clicking.
-function MessageEvent.click(query_or_index, delay) end
-
---- Alias for `event.click`.
----@param query_or_index string|integer
----@param delay? number
----@return BotCallbackAnswer|boolean
-function MessageEvent.click_button(query_or_index, delay) end
+function MessageEvent:click(query_or_index, delay) end
 
 --------------------------------------------------------------------------------
 -- 3. Message Filter Specification
@@ -184,12 +253,34 @@ function LogAPI.debug(message) end
 --- Configuration options for a dialog flow state machine.
 ---@class FlowOptions
 ---@field target_chat? integer Optional target chat ID to restrict this flow to.
+---@field chats? integer|integer[] Dialog ID or list of dialog IDs to accept.
+---@field senders? integer|integer[] Sender ID or list of sender IDs to accept.
+---@field incoming? boolean Match only incoming messages (`true`) or outgoing (`false`).
+---@field outgoing? boolean Match only outgoing messages (`true`) or incoming (`false`).
+---@field private? boolean Match 1-on-1 private user chats.
+---@field group? boolean Match basic groups.
+---@field channel? boolean Match channels and supergroups.
+---@field has_text? boolean `true` if text is non-empty, `false` if empty.
 ---@field timeout? number Timeout in seconds before the current step resets.
 
 --- Context passed to flow step action callbacks.
 ---@class FlowContext
 ---@field data table<string, any> Shared state data preserved across transitions.
 ---@field current_step string Name of the currently active step.
+local FlowContext = {}
+
+--- Sets a key in this flow's session state.
+---@param key string
+---@param value any
+---@return nil
+function FlowContext:set(key, value) end
+
+--- Gets a value from this flow's session state.
+---@generic T
+---@param key string
+---@param default? T
+---@return T
+function FlowContext:get(key, default) end
 
 --- Step definition configuration table.
 ---@class StepConfig
@@ -209,6 +300,33 @@ local Flow = {}
 ---@return Flow
 function Flow:step(name, config) end
 
+--- Registers a top-level command router (replaces `ox.on_message` for slash commands).
+---
+--- Example:
+--- ```lua
+--- flow:command("start", function(event, ctx)
+---     event:reply("Welcome! Enter your name:")
+---     return "ask_name"
+--- end)
+--- ```
+---@param commands string|string[] Command name or list of command names without slash.
+---@param action fun(event: MessageEvent, ctx: FlowContext): string|nil
+---@return Flow
+function Flow:command(commands, action) end
+
+--- Registers a top-level pattern / keyword trigger.
+---
+--- Example:
+--- ```lua
+--- flow:on("help", function(event, ctx)
+---     event:reply("Available commands: /start, /cancel")
+--- end)
+--- ```
+---@param pattern_or_keywords string|string[] Substring or regex pattern.
+---@param action fun(event: MessageEvent, ctx: FlowContext): string|nil
+---@return Flow
+function Flow:on(pattern_or_keywords, action) end
+
 --- Transitions the flow to a specific step immediately.
 ---@param step_name string Target step name.
 ---@return Flow
@@ -218,20 +336,92 @@ function Flow:go_to(step_name) end
 ---@return Flow
 function Flow:reset() end
 
---- Registers a global pattern matching regardless of the active step.
----@param pattern_or_table string|string[] Substring or regex.
----@param action fun(event: MessageEvent, ctx: FlowContext): string|nil
----@return Flow
-function Flow:on_match(pattern_or_table, action) end
-
 --------------------------------------------------------------------------------
 -- 7. Global `ox` Engine Table
 --------------------------------------------------------------------------------
+
+--- Options table for `ox.send_message`.
+---@class SendMessageTableOptions : MessageOptions
+---@field chat_id integer Target chat ID.
+---@field text string Message text content.
+
+--- Options table for `ox.edit_message`.
+---@class EditMessageTableOptions : MessageOptions
+---@field chat_id integer Target chat ID.
+---@field message_id integer ID of message to edit.
+---@field text string New message content.
+
+--- Options table for `ox.delete_message`.
+---@class DeleteMessageTableOptions
+---@field chat_id integer Target chat ID.
+---@field message_id? integer Single message ID to delete.
+---@field ids? integer[] Array of numeric message IDs to delete.
+---@field delay? number Optional delay in seconds.
+
+--- Options table for `ox.react`.
+---@class ReactTableOptions
+---@field chat_id integer Target chat ID.
+---@field message_id integer Message ID to react to.
+---@field emoji string Emoji string (e.g. "👍").
+---@field reaction? string Alias for emoji.
+---@field delay? number Optional delay in seconds.
+
+--- Options table for `ox.pin_message`.
+---@class PinMessageTableOptions
+---@field chat_id integer Target chat ID.
+---@field message_id integer Message ID to pin.
+---@field delay? number Optional delay in seconds.
+
+--- Options table for `ox.forward_message`.
+---@class ForwardMessageTableOptions
+---@field to_chat_id integer Destination chat ID.
+---@field from_chat_id integer Source chat ID.
+---@field message_id integer Message ID to forward.
+---@field delay? number Optional delay in seconds.
+
+--- Options table for media sending functions.
+---@class SendMediaTableOptions : MessageOptions
+---@field chat_id integer Target chat ID.
+---@field path string File system path to the media file.
+---@field caption? string Optional caption text.
+
+--- Options table for `ox.click_button`.
+---@class ClickButtonTableOptions
+---@field chat_id integer Target chat ID.
+---@field message_id integer ID of message containing the button.
+---@field data string Button callback payload data.
+
+--- Configuration options for `ox.file`.
+---@class FileConfig
+---@field default? string Default fallback path if user presses Enter without typing.
+---@field must_exist? boolean Whether the file must exist on disk (default true).
+---@field extensions? string[]|string Allowed file extensions without dot (e.g. `{"json", "txt"}` or `"json,txt"`).
+
+--- Options table for `ox.file` when passed as a single table.
+---@class FileTableOptions : FileConfig
+---@field prompt string Prompt label shown to the user.
+
+--- Options table for `ox.input` when passed as a single table.
+---@class InputTableOptions
+---@field prompt string Prompt label shown to the user.
+---@field default? string Default fallback value.
+
+--- Options table for `ox.select` when passed as a single table.
+---@class SelectTableOptions
+---@field prompt string Prompt label shown to the user.
+---@field options (string | SelectOptionItem)[] Array of options or label/value tables.
+---@field default? string Default selected option.
+
+--- Options table for `ox.confirm` when passed as a single table.
+---@class ConfirmTableOptions
+---@field prompt string Question or prompt text.
+---@field default? boolean Default boolean answer when pressing Enter.
 
 --- OxideGram Global Automation API.
 ---@class OxideGramAPI
 ---@field storage StorageAPI Persistent key-value storage.
 ---@field log LogAPI Logging utilities.
+---@field string StringAPI String helper functions.
 ox = {}
 
 --- Registers a message event listener with optional filter predicates.
@@ -242,21 +432,29 @@ function ox.on_message(filter_or_callback, callback) end
 
 --- Sends a text message to the specified Telegram chat.
 --- Automatically handles FloodWait rate-limiting with exponential backoff.
+--- Supports both positional syntax and named table syntax.
+---
+--- Example:
+--- ```lua
+--- ox.send_message(123456, "Hello world!")
+--- ox.send_message { chat_id = 123456, text = "Hello!", delay = 1.0 }
+--- ```
+---@overload fun(options: SendMessageTableOptions): nil
 ---@param chat_id integer Peer chat ID.
 ---@param text string Message text.
 ---@param options? MessageOptions|number Options table or numeric delay in seconds.
----@param extra_delay? number Additional delay in seconds.
 ---@return nil
-function ox.send_message(chat_id, text, options, extra_delay) end
-
---- Alias for `ox.send_message`.
----@param chat_id integer
----@param text string
----@param options? MessageOptions|number
----@return nil
-function ox.reply(chat_id, text, options) end
+function ox.send_message(chat_id, text, options) end
 
 --- Clicks an inline callback button by peer chat, message ID, and button data string.
+--- Supports both positional syntax and named table syntax.
+---
+--- Example:
+--- ```lua
+--- ox.click_button(chat_id, message_id, "confirm_payment")
+--- ox.click_button { chat_id = chat_id, message_id = message_id, data = "confirm_payment" }
+--- ```
+---@overload fun(options: ClickButtonTableOptions): BotCallbackAnswer
 ---@param chat_id integer Peer chat ID.
 ---@param message_id integer ID of message containing the inline button.
 ---@param data string Binary callback payload data.
@@ -264,6 +462,14 @@ function ox.reply(chat_id, text, options) end
 function ox.click_button(chat_id, message_id, data) end
 
 --- Edits an existing message sent by your userbot.
+--- Supports both positional syntax and named table syntax.
+---
+--- Example:
+--- ```lua
+--- ox.edit_message(chat_id, msg_id, "New text")
+--- ox.edit_message { chat_id = chat_id, message_id = msg_id, text = "New text" }
+--- ```
+---@overload fun(options: EditMessageTableOptions): nil
 ---@param chat_id integer Peer chat ID.
 ---@param message_id integer ID of message to edit.
 ---@param new_text string New message text.
@@ -271,37 +477,48 @@ function ox.click_button(chat_id, message_id, data) end
 ---@return nil
 function ox.edit_message(chat_id, message_id, new_text, options) end
 
---- Deletes a single message by ID.
+--- Deletes a single message or multiple messages by ID.
+--- Supports both positional syntax and named table syntax.
+---
+--- Example:
+--- ```lua
+--- ox.delete_message(chat_id, msg_id)
+--- ox.delete_message(chat_id, { 101, 102, 103 })
+--- ox.delete_message { chat_id = chat_id, message_id = msg_id, delay = 1.0 }
+--- ox.delete_message { chat_id = chat_id, ids = { 101, 102 }, delay = 1.0 }
+--- ```
+---@overload fun(options: DeleteMessageTableOptions): nil
 ---@param chat_id integer Peer chat ID.
----@param message_id integer ID of message to delete.
+---@param message_id_or_ids integer|integer[] Message ID or array of message IDs to delete.
 ---@param delay? number Delay in seconds before deleting.
 ---@return nil
-function ox.delete_message(chat_id, message_id, delay) end
-
---- Deletes multiple messages in a chat.
----@param chat_id integer Peer chat ID.
----@param message_ids integer[] Array of numeric message IDs.
----@param delay? number Delay in seconds before deleting.
----@return nil
-function ox.delete_messages(chat_id, message_ids, delay) end
+function ox.delete_message(chat_id, message_id_or_ids, delay) end
 
 --- Sends an emoji reaction to a message.
+--- Supports both positional syntax and named table syntax.
+---
+--- Example:
+--- ```lua
+--- ox.react(chat_id, msg_id, "👍")
+--- ox.react { chat_id = chat_id, message_id = msg_id, emoji = "🔥" }
+--- ```
+---@overload fun(options: ReactTableOptions): nil
 ---@param chat_id integer Peer chat ID.
 ---@param message_id integer Message ID to react to.
 ---@param emoji string Emoji string (e.g. "👍", "🔥", "❤️").
 ---@param delay? number Delay in seconds.
 ---@return nil
-function ox.send_reaction(chat_id, message_id, emoji, delay) end
-
---- Alias for `ox.send_reaction`.
----@param chat_id integer
----@param message_id integer
----@param emoji string
----@param delay? number
----@return nil
 function ox.react(chat_id, message_id, emoji, delay) end
 
 --- Pins a message in a chat.
+--- Supports both positional syntax and named table syntax.
+---
+--- Example:
+--- ```lua
+--- ox.pin_message(chat_id, msg_id)
+--- ox.pin_message { chat_id = chat_id, message_id = msg_id }
+--- ```
+---@overload fun(options: PinMessageTableOptions): nil
 ---@param chat_id integer Peer chat ID.
 ---@param message_id integer Message ID to pin.
 ---@param delay? number Delay in seconds.
@@ -309,6 +526,14 @@ function ox.react(chat_id, message_id, emoji, delay) end
 function ox.pin_message(chat_id, message_id, delay) end
 
 --- Forwards a message from one dialog to another.
+--- Supports both positional syntax and named table syntax.
+---
+--- Example:
+--- ```lua
+--- ox.forward_message(target_chat, source_chat, msg_id)
+--- ox.forward_message { to_chat_id = target_chat, from_chat_id = source_chat, message_id = msg_id }
+--- ```
+---@overload fun(options: ForwardMessageTableOptions): nil
 ---@param to_chat_id integer Destination chat ID.
 ---@param from_chat_id integer Source chat ID.
 ---@param message_id integer ID of message to forward.
@@ -322,15 +547,31 @@ function ox.forward_message(to_chat_id, from_chat_id, message_id, delay) end
 ---@return nil
 function ox.send_typing(chat_id, action) end
 
---- Sends a photo to a chat.
+--- Sends an image to a chat.
+--- Supports both positional syntax and named table syntax.
+---
+--- Example:
+--- ```lua
+--- ox.send_image(chat_id, "data/photo.jpg", "Photo caption")
+--- ox.send_image { chat_id = chat_id, path = "data/photo.jpg", caption = "Caption" }
+--- ```
+---@overload fun(options: SendMediaTableOptions): nil
 ---@param chat_id integer Peer chat ID.
 ---@param path string File system path to the image file.
 ---@param caption? string Optional caption text.
 ---@param options? MessageOptions|number
 ---@return nil
-function ox.send_photo(chat_id, path, caption, options) end
+function ox.send_image(chat_id, path, caption, options) end
 
 --- Sends a document or generic file to a chat.
+--- Supports both positional syntax and named table syntax.
+---
+--- Example:
+--- ```lua
+--- ox.send_document(chat_id, "data/report.pdf", "Monthly report")
+--- ox.send_document { chat_id = chat_id, path = "data/report.pdf" }
+--- ```
+---@overload fun(options: SendMediaTableOptions): nil
 ---@param chat_id integer Peer chat ID.
 ---@param path string File system path to the document.
 ---@param caption? string Optional caption text.
@@ -339,6 +580,14 @@ function ox.send_photo(chat_id, path, caption, options) end
 function ox.send_document(chat_id, path, caption, options) end
 
 --- Sends an audio track to a chat.
+--- Supports both positional syntax and named table syntax.
+---
+--- Example:
+--- ```lua
+--- ox.send_audio(chat_id, "audio/track.mp3", "Track title")
+--- ox.send_audio { chat_id = chat_id, path = "audio/track.mp3" }
+--- ```
+---@overload fun(options: SendMediaTableOptions): nil
 ---@param chat_id integer Peer chat ID.
 ---@param path string File system path to the audio file.
 ---@param caption? string Optional caption text.
@@ -347,6 +596,14 @@ function ox.send_document(chat_id, path, caption, options) end
 function ox.send_audio(chat_id, path, caption, options) end
 
 --- Sends a voice message to a chat.
+--- Supports both positional syntax and named table syntax.
+---
+--- Example:
+--- ```lua
+--- ox.send_voice(chat_id, "audio/voice.ogg")
+--- ox.send_voice { chat_id = chat_id, path = "audio/voice.ogg" }
+--- ```
+---@overload fun(options: SendMediaTableOptions): nil
 ---@param chat_id integer Peer chat ID.
 ---@param path string File system path to the voice file (e.g. .ogg/.opus).
 ---@param caption? string Optional caption text.
@@ -357,7 +614,7 @@ function ox.send_voice(chat_id, path, caption, options) end
 --- Schedules a recurring callback timer.
 ---@param duration_sec number Interval duration in seconds.
 ---@param callback fun() Function called on every tick.
----@return integer timer_id Timer handle used to cancel via `ox.clear_interval`.
+---@return integer timer_id Timer handle used to cancel via `ox.clear_interval` or `ox.clear_timer`.
 function ox.set_interval(duration_sec, callback) end
 
 --- Cancels an active interval timer.
@@ -368,13 +625,18 @@ function ox.clear_interval(timer_id) end
 --- Schedules a one-shot timeout callback.
 ---@param duration_sec number Delay duration in seconds before running.
 ---@param callback fun() Function called after delay.
----@return integer timer_id Timer handle used to cancel via `ox.clear_timeout`.
+---@return integer timer_id Timer handle used to cancel via `ox.clear_timeout` or `ox.clear_timer`.
 function ox.set_timeout(duration_sec, callback) end
 
 --- Cancels an active timeout timer.
 ---@param timer_id integer ID returned by `ox.set_timeout`.
 ---@return boolean `true` if cancelled, `false` if not found.
 function ox.clear_timeout(timer_id) end
+
+--- Cancels an active timer (interval or timeout).
+---@param timer_id integer ID returned by `ox.set_interval` or `ox.set_timeout`.
+---@return boolean `true` if cancelled, `false` if not found.
+function ox.clear_timer(timer_id) end
 
 --- Pauses execution for the specified number of seconds without blocking the runtime.
 ---@param seconds number Sleep duration in seconds.
@@ -398,19 +660,15 @@ function ox.choice(list) end
 ---@field label string Display label shown in the terminal menu.
 ---@field value? string Value returned when chosen (defaults to label).
 
---- Input configuration table.
----@class InputConfig
----@field default? string Default fallback value.
----@field options? (string | SelectOptionItem)[] List of allowed options to pick from.
-
 --- Prompts the user with an interactive terminal selection menu (via arrow keys or search).
----
---- Supports simple string arrays `{ "text", "grades" }` or detailed `{ { label = "Text", value = "text" } }`.
+--- Supports simple string arrays `{ "text", "grades" }`, detailed `{ { label = "Text", value = "text" } }`, or named table syntax.
 ---
 --- Example:
 --- ```lua
 --- local mode = ox.select("Desired spam mode?", { "text", "grades" }, "text")
+--- local mode = ox.select { prompt = "Desired spam mode?", options = { "text", "grades" }, default = "text" }
 --- ```
+---@overload fun(options: SelectTableOptions): string
 ---@param prompt string Prompt label shown to the user.
 ---@param options (string | SelectOptionItem)[] Array of options or label/value tables.
 ---@param default? string Default selected option.
@@ -418,27 +676,70 @@ function ox.choice(list) end
 function ox.select(prompt, options, default) end
 
 --- Prompts the user for a boolean yes/no confirmation.
+--- Supports both positional syntax and named table syntax.
 ---
 --- Example:
 --- ```lua
 --- local delete_sent = ox.confirm("Delete sent messages?", true)
+--- local delete_sent = ox.confirm { prompt = "Delete sent messages?", default = true }
 --- ```
+---@overload fun(options: ConfirmTableOptions): boolean
 ---@param prompt string Question or prompt text.
 ---@param default? boolean Default boolean answer when pressing Enter.
 ---@return boolean
 function ox.confirm(prompt, default) end
 
---- Prompts the user in the terminal during startup configuration.
+--- Prompts the user for a text string in the terminal during startup configuration.
+--- Supports both positional syntax and named table syntax.
 ---
---- If `options` table is provided, acts as an interactive select menu.
+--- Example:
+--- ```lua
+--- local key = ox.input("Enter API key:")
+--- local mode = ox.input("Desired mode:", "text")
+--- local text = ox.input { prompt = "Enter prompt:", default = "hello" }
+--- ```
+---@overload fun(options: InputTableOptions): string
 ---@param prompt string Prompt label shown to the user.
----@param default_or_config? string | InputConfig Default value string or configuration table.
----@return string User entered or selected string.
-function ox.input(prompt, default_or_config) end
+---@param default? string Default value string.
+---@return string User entered string.
+function ox.input(prompt, default) end
+
+--- Prompts the user for a file path with tab-autocomplete and extension validation.
+--- Supports both positional syntax and named table syntax.
+---
+--- Example:
+--- ```lua
+--- local file_path = ox.file("Path to config:", { default = "config.json", extensions = { "json" } })
+--- local file_path = ox.file { prompt = "Path to file:", default = "data.csv" }
+--- ```
+---@overload fun(options: FileTableOptions): string
+---@param prompt string Question or prompt text.
+---@param options? FileConfig|string Optional configuration table or default path string.
+---@return string The selected and validated file path.
+function ox.file(prompt, options) end
+
+--- Escapes special characters for Telegram MarkdownV2 formatting.
+---@param text string
+---@return string
+function ox.escape_markdown(text) end
+
+--- Escapes special characters (`&`, `<`, `>`, `"`) for Telegram HTML formatting.
+---@param text string
+---@return string
+function ox.escape_html(text) end
 
 --- Creates or retrieves a named Dialog Flow state machine.
+---
+--- Example:
+--- ```lua
+--- local flow = ox.flow("onboarding", { private = true })
+--- flow:command("start", function(event, ctx)
+---     event:reply("Welcome! What is your name?")
+---     return "ask_name"
+--- end)
+--- ```
 ---@param name string Unique name of the flow.
----@param options? FlowOptions Flow configuration.
+---@param options? FlowOptions Flow configuration and chat filters.
 ---@return Flow
 function ox.flow(name, options) end
 
@@ -447,8 +748,27 @@ function ox.flow(name, options) end
 function ox.stop() end
 
 --------------------------------------------------------------------------------
--- 8. String Standard Library Extensions
+-- 8. String Standard Library Extensions (`ox.string` & Metatable)
 --------------------------------------------------------------------------------
+
+--- String helper utilities available via `ox.string.*` and string metatable methods (`str:method()`).
+---@class StringAPI
+---@field contains fun(str: string, substring: string): boolean
+---@field starts_with fun(str: string, prefix: string): boolean
+---@field ends_with fun(str: string, suffix: string): boolean
+---@field split fun(str: string, separator?: string): string[]
+---@field trim fun(str: string): string
+---@field replace fun(str: string, target: string, replacement: string, is_regex?: boolean): string
+---@field strip_prefix fun(str: string, prefix: string): string
+---@field strip_suffix fun(str: string, suffix: string): string
+---@field pad_left fun(str: string, length: integer, pad_char?: string): string
+---@field pad_right fun(str: string, length: integer, pad_char?: string): string
+---@field is_empty fun(str: string): boolean
+---@field is_blank fun(str: string): boolean
+---@field escape_markdown fun(str: string): string
+---@field escape_html fun(str: string): string
+---@field extract_command fun(str: string, bot_username?: string): string|nil, string
+---@field lines fun(str: string): string[]
 
 --- Checks if string contains a substring (case-sensitive or plain).
 ---@param self string
@@ -479,31 +799,69 @@ function string:split(separator) end
 ---@return string
 function string:trim() end
 
---- Global shortcut for `string:contains`.
----@param str string
----@param substring string
----@return boolean
-function contains(str, substring) end
-
---- Global shortcut for `string:starts_with`.
----@param str string
----@param prefix string
----@return boolean
-function starts_with(str, prefix) end
-
---- Global shortcut for `string:ends_with`.
----@param str string
----@param suffix string
----@return boolean
-function ends_with(str, suffix) end
-
---- Global shortcut for `string:split`.
----@param str string
----@param separator? string
----@return string[]
-function split(str, separator) end
-
---- Global shortcut for `string:trim`.
----@param str string
+--- Replaces occurrences of `target` with `replacement`. If `is_regex` is true, compiles target as regular expression.
+---@param self string
+---@param target string Substring or regex pattern.
+---@param replacement string Replacement text.
+---@param is_regex? boolean Whether `target` is a regular expression (default false).
 ---@return string
-function trim(str) end
+function string:replace(target, replacement, is_regex) end
+
+--- Strips prefix from string if it starts with it.
+---@param self string
+---@param prefix string
+---@return string
+function string:strip_prefix(prefix) end
+
+--- Strips suffix from string if it ends with it.
+---@param self string
+---@param suffix string
+---@return string
+function string:strip_suffix(suffix) end
+
+--- Pads string on the left until it reaches `length`.
+---@param self string
+---@param length integer
+---@param pad_char? string Single padding character (default " ").
+---@return string
+function string:pad_left(length, pad_char) end
+
+--- Pads string on the right until it reaches `length`.
+---@param self string
+---@param length integer
+---@param pad_char? string Single padding character (default " ").
+---@return string
+function string:pad_right(length, pad_char) end
+
+--- Returns true if string is empty (`""`).
+---@param self string
+---@return boolean
+function string:is_empty() end
+
+--- Returns true if string is empty or contains only whitespace.
+---@param self string
+---@return boolean
+function string:is_blank() end
+
+--- Escapes special characters for Telegram MarkdownV2 formatting.
+---@param self string
+---@return string
+function string:escape_markdown() end
+
+--- Escapes special characters (`&`, `<`, `>`, `"`) for Telegram HTML formatting.
+---@param self string
+---@return string
+function string:escape_html() end
+
+--- Extracts command name without slash and arguments from string.
+---@param self string
+---@param bot_username? string Bot username to strip (e.g. "mybot" for `/start@mybot`).
+---@return string|nil command Command name or nil if not a command.
+---@return string args Remainder arguments string.
+function string:extract_command(bot_username) end
+
+--- Splits string into array of lines.
+---@param self string
+---@return string[]
+function string:lines() end
+

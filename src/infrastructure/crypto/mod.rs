@@ -12,7 +12,10 @@ pub mod windows;
 #[allow(unused_imports)]
 pub use device_vault::HardwareDeviceVault;
 #[allow(unused_imports)]
-pub use fingerprint::{FingerprintCollector, get_platform_collector, is_termux_environment};
+pub use fingerprint::{
+    FingerprintCollector, get_platform_collector, is_android_or_termux_environment,
+    is_termux_environment,
+};
 #[allow(unused_imports)]
 pub use provider::HardwareMasterKeyProvider;
 

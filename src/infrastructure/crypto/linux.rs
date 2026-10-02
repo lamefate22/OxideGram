@@ -25,27 +25,52 @@ impl LinuxFingerprintCollector {
     }
 
     /// Extracts CPU model name and vendor from `/proc/cpuinfo`.
+    /// Also supports ARM-based Linux hosts (e.g. Raspberry Pi, aarch64 servers).
     fn extract_cpu_info() -> Option<String> {
         let content = fs::read_to_string("/proc/cpuinfo").ok()?;
         let mut model = None;
         let mut vendor = None;
+        let mut hardware = None;
+        let mut implementer = None;
+        let mut part = None;
 
         for line in content.lines() {
-            if line.starts_with("model name") && model.is_none() {
-                model = line.find(':').map(|pos| line[pos + 1..].trim().to_string());
-            } else if line.starts_with("vendor_id") && vendor.is_none() {
-                vendor = line.find(':').map(|pos| line[pos + 1..].trim().to_string());
-            }
-            if model.is_some() && vendor.is_some() {
-                break;
+            let trimmed = line.trim();
+            if trimmed.starts_with("model name") && model.is_none() {
+                model = trimmed
+                    .find(':')
+                    .map(|pos| trimmed[pos + 1..].trim().to_string());
+            } else if trimmed.starts_with("vendor_id") && vendor.is_none() {
+                vendor = trimmed
+                    .find(':')
+                    .map(|pos| trimmed[pos + 1..].trim().to_string());
+            } else if (trimmed.starts_with("Hardware") || trimmed.starts_with("Model"))
+                && hardware.is_none()
+            {
+                hardware = trimmed
+                    .find(':')
+                    .map(|pos| trimmed[pos + 1..].trim().to_string());
+            } else if trimmed.starts_with("CPU implementer") && implementer.is_none() {
+                implementer = trimmed
+                    .find(':')
+                    .map(|pos| trimmed[pos + 1..].trim().to_string());
+            } else if trimmed.starts_with("CPU part") && part.is_none() {
+                part = trimmed
+                    .find(':')
+                    .map(|pos| trimmed[pos + 1..].trim().to_string());
             }
         }
 
-        match (vendor, model) {
-            (Some(v), Some(m)) => Some(format!("{v} {m}")),
-            (Some(v), None) => Some(v),
-            (None, Some(m)) => Some(m),
-            (None, None) => None,
+        if let (Some(v), Some(m)) = (vendor.as_deref(), model.as_deref()) {
+            Some(format!("{v} {m}"))
+        } else if let Some(m) = model {
+            Some(m)
+        } else if let Some(h) = hardware {
+            Some(h)
+        } else if let (Some(imp), Some(prt)) = (implementer.as_deref(), part.as_deref()) {
+            Some(format!("arm:imp={imp}:part={prt}"))
+        } else {
+            None
         }
     }
 }

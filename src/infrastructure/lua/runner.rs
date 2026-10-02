@@ -818,19 +818,42 @@ impl LuaBotRunner {
                     let markup = markup_click.clone();
                     async move {
                         let (arg1, delay_val, _) = Self::shift_event_args(a1, a2, a3);
-                        let (query_val, delay) = if let Value::Table(ref t) = arg1 {
+                        let (query_val, explicit_data, delay) = if let Value::Table(ref t) = arg1 {
+                            let explicit_d: Option<String> = t.get("data").ok();
                             let q: Value = t
                                 .get("query")
                                 .or_else(|_| t.get("text"))
                                 .or_else(|_| t.get("index"))
+                                .or_else(|_| t.get("data"))
                                 .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
                             let d: Option<f64> = t.get("delay").ok();
-                            (q, d)
+                            (q, explicit_d, d)
                         } else {
-                            (arg1, Self::value_to_f64(delay_val))
+                            (arg1, None, Self::value_to_f64(delay_val))
                         };
 
                         apply_optional_delay(delay).await;
+
+                        // 1. If explicit callback data was provided in options (e.g. event.click { data = "..." }):
+                        if let Some(ref data_str) = explicit_data {
+                            info!(target: "oxidegram", "[ACT] Sending inline callback data directly: \"{}\"", data_str);
+                            use grammers_tl_types as tl;
+                            let input_peer = tl::enums::InputPeer::from(&peer_ref);
+                            let req = tl::functions::messages::GetBotCallbackAnswer {
+                                peer: input_peer,
+                                msg_id: message_id,
+                                data: Some(data_str.as_bytes().to_vec()),
+                                game: false,
+                                password: None,
+                            };
+                            let res = invoke_with_flood_wait(&client, &req).await?;
+                            match res {
+                                tl::enums::messages::BotCallbackAnswer::Answer(ans) => {
+                                    return Ok(ans.message.unwrap_or_default());
+                                }
+                            }
+                        }
+
                         let btn = match &query_val {
                             Value::Integer(i) if *i >= 1 => {
                                 markup.flat_button_at((*i - 1) as usize)
@@ -846,7 +869,7 @@ impl LuaBotRunner {
                             }
                             _ => {
                                 return Err(mlua::Error::RuntimeError(
-                                    "click expects button text or 1-based index".into(),
+                                    "click expects button text, callback data, or 1-based index".into(),
                                 ));
                             }
                         };
@@ -880,13 +903,34 @@ impl LuaBotRunner {
                                 _ => Ok(String::new()),
                             }
                         } else if let Value::String(s) = query_val {
-                            // In Telegram, clicking a regular reply button simply sends its text as a message.
-                            // If the button wasn't explicitly found in the parsed keyboard (e.g. sent in earlier message),
-                            // send the requested text directly as a resilient fallback.
                             let text = s
                                 .to_str()
                                 .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?
                                 .to_string();
+
+                            // If string starts with '{' (JSON) or looks like callback data, send GetBotCallbackAnswer instead of text message!
+                            if text.starts_with('{') || text.starts_with("cb:") || text.contains("\"com\"") || text.contains("\"data\"") {
+                                info!(target: "oxidegram", "[ACT] Sending inline callback data directly: \"{}\"", text);
+                                use grammers_tl_types as tl;
+                                let input_peer = tl::enums::InputPeer::from(&peer_ref);
+                                let req = tl::functions::messages::GetBotCallbackAnswer {
+                                    peer: input_peer,
+                                    msg_id: message_id,
+                                    data: Some(text.into_bytes()),
+                                    game: false,
+                                    password: None,
+                                };
+                                let res = invoke_with_flood_wait(&client, &req).await?;
+                                match res {
+                                    tl::enums::messages::BotCallbackAnswer::Answer(ans) => {
+                                        return Ok(ans.message.unwrap_or_default());
+                                    }
+                                }
+                            }
+
+                            // In Telegram, clicking a regular reply button simply sends its text as a message.
+                            // If the button wasn't explicitly found in the parsed keyboard (e.g. sent in earlier message),
+                            // send the requested text directly as a resilient fallback.
                             info!(target: "oxidegram", "[ACT] Pressed reply button: \"{}\"", text);
                             let input_msg = InputMessage::new().text(text.clone());
                             invoke_send_message(&client, peer_ref, input_msg).await?;
@@ -901,7 +945,10 @@ impl LuaBotRunner {
             )
             .map_err(ScriptError::LuaError)?;
         event_table
-            .set("click", click_fn)
+            .set("click", click_fn.clone())
+            .map_err(ScriptError::LuaError)?;
+        event_table
+            .set("click_button", click_fn)
             .map_err(ScriptError::LuaError)?;
 
         Ok(event_table)

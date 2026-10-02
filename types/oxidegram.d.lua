@@ -48,6 +48,7 @@
 ---@class EventClickTableOptions
 ---@field query? string Button text or substring to match.
 ---@field text? string Alias for query.
+---@field data? string Raw callback data payload (e.g. JSON or callback string).
 ---@field index? integer 1-based index of button.
 ---@field delay? number Optional delay in seconds.
 
@@ -188,6 +189,16 @@ function MessageEvent.pin(delay_or_options) end
 ---@param delay? number Optional delay in seconds.
 ---@return BotCallbackAnswer|boolean Result of clicking.
 function MessageEvent:click(query_or_index, delay) end
+
+--- Direct alias for clicking an inline callback button using raw callback data payload.
+--- Executes MTProto `GetBotCallbackAnswer`.
+---@overload fun(options: EventClickTableOptions): BotCallbackAnswer|boolean
+---@overload fun(callback_data: string, delay?: number): BotCallbackAnswer|boolean
+---@overload fun(self: MessageEvent, options: EventClickTableOptions): BotCallbackAnswer|boolean
+---@param callback_data string Raw callback data payload (e.g. `'{"com":"START_DIAL_POST"}'`).
+---@param delay? number Optional delay in seconds.
+---@return BotCallbackAnswer|boolean Result of clicking.
+function MessageEvent:click_button(callback_data, delay) end
 
 --------------------------------------------------------------------------------
 -- 3. Message Filter Specification

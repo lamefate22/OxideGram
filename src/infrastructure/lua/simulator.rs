@@ -701,21 +701,30 @@ impl BotSimulator {
                     let markup = markup_copy.clone();
                     async move {
                         let (arg1, delay_val, _) = Self::shift_sim_event_args(a1, a2, a3);
-                        let (query_val, delay) = if let Value::Table(ref t) = arg1 {
+                        let (query_val, explicit_data, delay) = if let Value::Table(ref t) = arg1 {
+                            let explicit_d: Option<String> = t.get("data").ok();
                             let q: Value = t
                                 .get("query")
                                 .or_else(|_| t.get("text"))
                                 .or_else(|_| t.get("index"))
+                                .or_else(|_| t.get("data"))
                                 .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
                             let d: Option<f64> = t.get("delay").ok();
-                            (q, d)
+                            (q, explicit_d, d)
                         } else {
-                            (arg1, Self::value_to_f64(delay_val))
+                            (arg1, None, Self::value_to_f64(delay_val))
                         };
 
                         let d_str = delay
                             .map(|d| format!(" (delay: {d:.1}s)"))
                             .unwrap_or_default();
+
+                        if let Some(ref data_str) = explicit_data {
+                            println!(
+                                "  \x1b[33m[EVENT CLICK CALLBACK]\x1b[0m Sent callback query data: \"{data_str}\"{d_str}"
+                            );
+                            return Ok(data_str.clone());
+                        }
 
                         let btn = match &query_val {
                             Value::Integer(i) if *i >= 1 => {
@@ -744,8 +753,15 @@ impl BotSimulator {
                                 .to_str()
                                 .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?
                                 .to_string();
-                            println!("  \x1b[33m[EVENT CLICK FALLBACK]\x1b[0m Sent button text: \"{query_str}\"{d_str}");
-                            Ok(query_str)
+                            if query_str.starts_with('{') || query_str.starts_with("cb:") || query_str.contains("\"com\"") || query_str.contains("\"data\"") {
+                                println!(
+                                    "  \x1b[33m[EVENT CLICK CALLBACK]\x1b[0m Sent callback query data: \"{query_str}\"{d_str}"
+                                );
+                                Ok(query_str)
+                            } else {
+                                println!("  \x1b[33m[EVENT CLICK FALLBACK]\x1b[0m Sent button text: \"{query_str}\"{d_str}");
+                                Ok(query_str)
+                            }
                         } else {
                             Err(mlua::Error::RuntimeError(
                                 "Button not found on message".into(),
@@ -756,7 +772,10 @@ impl BotSimulator {
             )
             .map_err(ScriptError::LuaError)?;
         event
-            .set("click", click_fn)
+            .set("click", click_fn.clone())
+            .map_err(ScriptError::LuaError)?;
+        event
+            .set("click_button", click_fn)
             .map_err(ScriptError::LuaError)?;
 
         // event.edit
@@ -1180,5 +1199,34 @@ mod tests {
         sim.load_script().await.unwrap();
         assert_eq!(sim.handlers.lock().await.len(), 1);
         sim.simulate_incoming("Теперь поставьте").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_simulator_event_click_callback_data() {
+        let temp_dir = std::env::temp_dir();
+        let script_path = temp_dir.join("test_sim_click_cb.lua");
+        let script = r#"
+            ox.on_message(function(event)
+                -- 1. Click with explicit data table
+                local res1 = event:click { data = '{"com":"START_DIAL_POST","data":"1108360"}' }
+                assert(res1 == '{"com":"START_DIAL_POST","data":"1108360"}')
+
+                -- 2. Click with click_button alias
+                local res2 = event:click_button('{"com":"START_DIAL_POST","data":"1108360"}')
+                assert(res2 == '{"com":"START_DIAL_POST","data":"1108360"}')
+
+                -- 3. Click with JSON string directly in query
+                local res3 = event:click('{"com":"START_DIAL_POST","data":"1108360"}')
+                assert(res3 == '{"com":"START_DIAL_POST","data":"1108360"}')
+            end)
+            return true
+        "#;
+        std::fs::write(&script_path, script).unwrap();
+
+        let console = Arc::new(MockConsole);
+        let mut sim = BotSimulator::new(&script_path, console).await.unwrap();
+        sim.load_script().await.unwrap();
+        sim.simulate_incoming("test").await.unwrap();
+        let _ = std::fs::remove_file(&script_path);
     }
 }
